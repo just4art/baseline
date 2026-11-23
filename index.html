@@ -123,6 +123,8 @@ button{cursor:pointer}
 .szb span{font-size:13px;color:var(--muted)}
 .szb:active{transform:scale(.96)}
 .szrow{gap:6px;margin:-4px 0 8px 34px}
+.naprow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px}
+.naprow .small{margin-right:2px}
 .night:first-of-type{border-top:none}
 .night .row{margin-top:6px}
 .tl{flex:1;display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--muted);font-weight:600}
@@ -475,6 +477,18 @@ const SIZES = [{v:0.5,n:'Light',d:'a few bites to half'},{v:1,n:'Normal',d:'one 
 const msz = m => m.sz || 1;
 const szTag = m => ({0.5:'½',2:'×2',3:'×3'})[msz(m)] || '';
 const portionsOn = k => mealsOn(k).reduce((a,m)=>a+msz(m),0);
+/* habits: tracked, never judged */
+const GOOD = [{id:'meditate', n:'Meditation', add:[5,10], hint:'even 5 minutes counts'}]; // later: reading, puzzles…
+const DRINKS = {beer:{n:'Beer',ic:'🍺',abv:5}, wine:{n:'Wine',ic:'🍷',abv:12}, spirit:{n:'Spirits',ic:'🥃',abv:40}};
+const NIC = {gum:'Gum', iqos:'IQOS', cig:'Cigarette', tab:'Tablet'};
+const shown = id => S.settings.show[id] !== false;
+const onDay = (col, k) => S[col].filter(x=>lday(x.ts)===k).sort((a,b)=>a.ts-b.ts);
+const stdDr = d => d.ml*DRINKS[d.k].abv/100*0.789/10; // standard drink = 10 g alcohol
+const drLabel = d => d.k==='beer' ? `beer ${+(d.ml/1000).toFixed(2)} L` : d.k==='wine' ? 'wine glass' : 'shot';
+const napOn = k => (S.naps.find(n=>n.date===k)||{}).min || 0;
+const fmtMin = m => m>=60 ? `${Math.floor(m/60)}h${m%60?String(m%60).padStart(2,'0'):''}` : `${m}m`;
+const kindCount = (list, names) => Object.entries(list.reduce((o,x)=>(o[x.k]=(o[x.k]||0)+1,o),{})).map(([k,n])=>`${names[k].toLowerCase()} ${n}`).join(', ');
+let RESHEET = null;
 const fmtP = v => String(+v.toFixed(1)).replace('.5','½').replace(/^0½/,'½');
 // a night belongs to the calendar day you woke up
 const sleepOn = k => S.sleep.filter(x=>x.wake && x.bed && dkey(new Date(x.wake))===k).sort((a,b)=>a.wake-b.wake).pop() || null;
@@ -528,18 +542,20 @@ const num = v => { const n = parseFloat(String(v).replace(',','.')); return isFi
 
 /* ================= storage ================= */
 const KEY = 'baseline.v1';
-const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',waterGoal:2000,glass:250,reported:{},snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[],water:[],meals:[],sleep:[]});
+const APP_VERSION = 6;
+const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',waterGoal:2000,glass:250,reported:{},show:{},nicLast:'gum',snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[],water:[],meals:[],sleep:[],naps:[],drinks:[],nic:[],good:[]});
 function load(){
   try{
     const raw = localStorage.getItem(KEY);
     if(raw){
-      const d = JSON.parse(raw), def = DEFAULT(), obj = v => v && typeof v==='object' && !Array.isArray(v) ? v : {};
+      const d = JSON.parse(raw), def = DEFAULT(), arr = v => Array.isArray(v) ? v : [], obj = v => v && typeof v==='object' && !Array.isArray(v) ? v : {};
       const st = {...def.settings, ...(d.settings||{})};
-      st.snacks = obj(st.snacks); st.reported = obj(st.reported); st.nudgeOff = obj(st.nudgeOff); st.bumped = obj(st.bumped);
+      st.snacks = obj(st.snacks); st.reported = obj(st.reported); st.show = obj(st.show); st.nudgeOff = obj(st.nudgeOff); st.bumped = obj(st.bumped);
       return {...def, ...d, settings:st,
         sessions:Array.isArray(d.sessions)?d.sessions:[], habits:obj(d.habits), body:Array.isArray(d.body)?d.body:[],
         snackLog:Array.isArray(d.snackLog)?d.snackLog:[], checkins:Array.isArray(d.checkins)?d.checkins:[],
-        water:Array.isArray(d.water)?d.water:[], meals:Array.isArray(d.meals)?d.meals:[], sleep:Array.isArray(d.sleep)?d.sleep.filter(x=>x&&x.bed&&x.wake):[]};
+        water:Array.isArray(d.water)?d.water:[], meals:Array.isArray(d.meals)?d.meals:[], sleep:Array.isArray(d.sleep)?d.sleep.filter(x=>x&&x.bed&&x.wake):[],
+        naps:arr(d.naps), drinks:arr(d.drinks), nic:arr(d.nic), good:arr(d.good)};
     }
   }catch(e){}
   return DEFAULT();
@@ -746,6 +762,7 @@ function renderToday(){
 
   h += snacksCard(today);
   h += trackCard();
+  h += habitsCard();
   h += nudgeCard();
   h += reportCard();
 
@@ -894,7 +911,7 @@ function trackCard(){
       <button class="nm" data-act="mealsheet">Food<small class="times">${fd.length?fd.map(m=>(m.k==='snack'?'🍪':'')+hm(m.ts)+(m.k==='snack'||!szTag(m)?'':' '+szTag(m))).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
       <button class="add wide" data-act="fsnack">+ Snack</button><button class="add big wide" data-act="mealask">+ Meal</button>
     </div></div>`;
-  const nights = nk.map(x=>{ const sl = sleepOn(x); return `${DAYN[parseKey(x).getDay()]} ${sl?'<b>'+dur(sl.wake-sl.bed)+'</b>':'—'}`; }).join(' · ');
+  const nights = nk.map(x=>{ const sl = sleepOn(x); return `${DAYN[parseKey(x).getDay()]} ${sl?'<b>'+dur(sl.wake-sl.bed)+'</b>':'—'}${napOn(x)?'+'+fmtMin(napOn(x)):''}`; }).join(' · ');
   h += `<div class="snack"><div class="r">
       <button class="nm" data-act="sleepsheet">Sleep<small class="times">${nights}</small></button>
       <button class="add wide ${sleepOn(nk[0])?'':'big'}" data-act="sleepsheet">+ Log</button>
@@ -932,6 +949,61 @@ function mealAsk(){
     <p class="small muted">Compared with a normal plate. A rough guess is fine.</p>
     <div class="szgrid">${SIZES.map(x=>`<button class="szb" data-act="meal" data-v="${x.v}"><b>${x.n}</b><span>${x.d}</span></button>`).join('')}</div>`);
 }
+function habitsCard(){
+  const k = lday(Date.now()), rows = [];
+  const mon = dkey(mondayOf(new Date()));
+  GOOD.filter(g=>shown(g.id)).forEach(g => {
+    const td = onDay('good',k).filter(x=>x.id===g.id), v = td.reduce((a,x)=>a+x.min,0);
+    const wk = S.good.filter(x=>x.id===g.id && lday(x.ts)>=mon).length;
+    rows.push(`<div class="r"><button class="nm" data-act="goodsheet" data-id="${g.id}">${g.n}<small>${v?`${v} min today`:g.hint} · ${wk}× this week</small></button>
+      ${g.add.map((n,j)=>`<button class="add ${j?'big':''}" data-act="good" data-id="${g.id}" data-n="${n}">+${n}m</button>`).join('')}</div>`);
+  });
+  if(shown('alcohol')){
+    const ds = onDay('drinks',k), sd = ds.reduce((a,d)=>a+stdDr(d),0);
+    rows.push(`<div class="r"><button class="nm" data-act="drinksheet">Alcohol<small class="times">${ds.length?ds.map(d=>DRINKS[d.k].ic+hm(d.ts)).join(' · ')+` · ≈${sd.toFixed(1)} std · edit ›`:'🍺 beer, litres · wine &amp; spirits ›'}</small></button>
+      <span class="cnt">${ds.length}</span>
+      <button class="add" data-act="drink" data-k="beer" data-ml="330" aria-label="Beer 0.33 litre">0.33</button><button class="add big" data-act="drink" data-k="beer" data-ml="500" aria-label="Beer 0.5 litre">0.5</button></div>`);
+  }
+  if(shown('nicotine')){
+    const ns = onDay('nic',k), y = onDay('nic', dkey(addDays(parseKey(k),-1))).length, lk = S.settings.nicLast in NIC ? S.settings.nicLast : 'gum';
+    rows.push(`<div class="r"><button class="nm" data-act="nicsheet">Nicotine<small class="times">${ns.length?kindCount(ns,NIC):'none yet'} · yesterday ${y}</small></button>
+      <span class="cnt">${ns.length}</span>
+      <button class="add" data-act="nicsheet" aria-label="Pick another kind">⋯</button><button class="add big wide" data-act="nic" data-k="${lk}">+ ${NIC[lk]}</button></div>`);
+  }
+  if(!rows.length) return '';
+  return `<div class="card"><h3 style="margin:0 0 2px">Habits</h3><p class="small muted" style="margin:0">Tracking only. Seeing the pattern is the first step.</p>
+    ${rows.map((r,i)=>`<div class="snack ${i?'':'first'}" ${i?'':'style="margin-top:6px"'}>${r}</div>`).join('')}</div>`;
+}
+function addLog(col, entry, msg){
+  snap(col); S[col].push(entry); S.settings.welcomed = true; save(); render();
+  if($('#scrim') && RESHEET) RESHEET();
+  undoToast(msg);
+}
+const logList = (col, items, label) => items.length ? items.map(x=>stepper(label(x), x.ts, 'mv', `data-col="${col}" data-ts="${x.ts}"`).replace('</span></div>',`<button class="ib" data-act="del" data-col="${col}" data-ts="${x.ts}" aria-label="Delete">✕</button></span></div>`)).join('') : '<p class="small muted">Nothing today.</p>';
+function drinkSheet(){
+  RESHEET = drinkSheet;
+  const ds = onDay('drinks', lday(Date.now())), sd = ds.reduce((a,d)=>a+stdDr(d),0);
+  openSheet(`<div class="row between"><h2>Alcohol today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">${ds.length?`≈ ${sd.toFixed(1)} standard drinks (10 g alcohol each). `:''}Forgot one? Add it and nudge the time back.</p>
+    <div class="szgrid">${[['beer',330,'Beer','0.33 L'],['beer',500,'Beer','0.5 L'],['wine',150,'Wine','a glass'],['spirit',40,'Spirits','a shot']].map(([k,ml,n,d])=>`<button class="szb" data-act="drink" data-k="${k}" data-ml="${ml}"><b>${DRINKS[k].ic} ${n}</b><span>${d}</span></button>`).join('')}</div>
+    <div style="margin-top:12px">${logList('drinks', ds, d=>DRINKS[d.k].ic)}</div>`);
+}
+function nicSheet(){
+  RESHEET = nicSheet;
+  const ns = onDay('nic', lday(Date.now()));
+  openSheet(`<div class="row between"><h2>Nicotine today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Tap what you just had. The main button remembers your last choice.</p>
+    <div class="szgrid">${Object.entries(NIC).map(([k,n])=>`<button class="szb" data-act="nic" data-k="${k}"><b>${n}</b><span>${onDay('nic',lday(Date.now())).filter(x=>x.k===k).length} today</span></button>`).join('')}</div>
+    <div style="margin-top:12px">${logList('nic', ns, x=>({gum:'Gum',iqos:'IQ',cig:'Cig',tab:'Tab'})[x.k])}</div>`);
+}
+function goodSheet(id){
+  const g = GOOD.find(x=>x.id===id) || GOOD[0]; RESHEET = () => goodSheet(g.id);
+  const ls = onDay('good', lday(Date.now())).filter(x=>x.id===g.id);
+  openSheet(`<div class="row between"><h2>${g.n}</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Sit, close your eyes, follow the breath. When the mind wanders, notice and come back. That's the whole exercise.</p>
+    <div class="row">${[5,10,15,20].map(n=>`<button class="btn sm" data-act="good" data-id="${g.id}" data-n="${n}">+${n} min</button>`).join('')}</div>
+    <div style="margin-top:12px">${logList('good', ls, x=>x.min+'m')}</div>`);
+}
 const SLDRAFT = {};
 function sleepSheet(){
   const rows = nightKeys().map((k,i) => {
@@ -939,7 +1011,8 @@ function sleepSheet(){
     const bv = sl ? hm(sl.bed) : (dr.bed||''), wv = sl ? hm(sl.wake) : (dr.wake||'');
     return `<div class="night"><div class="row between"><b>${i===0?'Last night':`${prev} → ${DAYN[parseKey(k).getDay()]}`}</b><span class="small muted">${sl?dur(sl.wake-sl.bed)+` <button class="link" data-act="sleepdel" data-k="${k}">clear</button>`:'not logged'}</span></div>
       <div class="row"><label class="tl">Fell asleep<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="bed" value="${bv}"></label>
-      <label class="tl">Woke up<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="wake" value="${wv}"></label></div></div>`;
+      <label class="tl">Woke up<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="wake" value="${wv}"></label></div>
+      <div class="naprow"><span class="small muted">Nap ${i===0?'today':'that day'}</span>${[0,20,30,45,60,90,120].map(v=>`<button class="tog ${napOn(k)===v?'on':''}" data-act="nap" data-k="${k}" data-v="${v}">${v?fmtMin(v):'none'}</button>`).join('')}</div></div>`;
   }).join('');
   openSheet(`<div class="row between"><h2>Sleep</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
     <p class="small muted">Fill in the last few nights whenever you remember. Rough times are fine.</p>${rows}`);
@@ -996,6 +1069,10 @@ function reportText(weeks){
       const ms = mealsOn(k); if(ms.length) parts.push(`meals ${ms.map(m=>hm(m.ts)+(szTag(m)?`(${szTag(m)})`:'')).join(' ')} = ${fmtP(portionsOn(k))} portions`);
       const fs = fsnOn(k); if(fs.length) parts.push(`food snacks ${fs.map(m=>hm(m.ts)).join(' ')}`);
       const sl = sleepOn(k); if(sl) parts.push(`sleep ${sl.bed?hm(sl.bed):'?'}→${hm(sl.wake)}${sl.bed?` (${dur(sl.wake-sl.bed)})`:''}`);
+      if(napOn(k)) parts.push(`nap ${fmtMin(napOn(k))}`);
+      const gd = onDay('good',k); if(gd.length) parts.push(gd.map(x=>`${GOOD.find(g=>g.id===x.id)?.n.toLowerCase()||x.id} ${x.min}min ${hm(x.ts)}`).join(', '));
+      const dr = onDay('drinks',k); if(dr.length) parts.push(`alcohol ${dr.map(d=>`${drLabel(d)} ${hm(d.ts)}`).join(', ')} ≈${dr.reduce((a,d)=>a+stdDr(d),0).toFixed(1)} std drinks`);
+      const nc = onDay('nic',k); if(nc.length) parts.push(`nicotine ${nc.length}: ${nc.map(x=>`${x.k} ${hm(x.ts)}`).join(' ')}`);
       const hrs = S.snackLog.filter(e=>e.date===k && e.n>0).map(e=>new Date(e.ts).getHours());
       if(hrs.length) parts.push(`snack times: ${[...new Set(hrs)].sort((a,b)=>a-b).map(x=>x+'h').join(' ')}`);
       L.push(`  ${DOW[(parseKey(k).getDay()+6)%7]} ${fmtDate(k)}: ${parts.join(' | ') || '—'}`);
@@ -1012,7 +1089,7 @@ function reportText(weeks){
   }
   const ws = S.body.filter(b=>b.waist!=null).sort((a,b)=>a.date<b.date?-1:1);
   if(ws.length>1) L.push('', `Waist trend: ${ws[0].waist} cm (${fmtDate(ws[0].date)}) → ${ws[ws.length-1].waist} cm (${fmtDate(ws[ws.length-1].date)})`);
-  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so food after midnight belongs to the evening before. "Food snacks" are eating, not exercise. Sleep is listed on the day you woke up.`,
+  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so food after midnight belongs to the evening before. "Food snacks" are eating, not exercise. A standard drink is 10 g of alcohol. Sleep is listed on the day you woke up.`,
     'Please review this. First ask me 3-5 quick questions I can answer in a word or two (energy, hunger, what got in the way, anything to change in the app). Then tell me what is working and the one change for next week.');
   return L.join('\n');
 }
@@ -1033,6 +1110,13 @@ function trackSummary(days){
   }
   const sl = days.map(sleepOn).filter(x=>x && x.bed);
   if(sl.length) out.push(`sleep avg ${dur(avg(sl.map(x=>x.wake-x.bed)))} over ${sl.length} night${sl.length>1?'s':''}, asleep ~${fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18)}, up ~${fromMins(avg(sl.map(x=>minsFrom(x.wake,0))),0)}`);
+  const nps = days.map(napOn).filter(Boolean);
+  if(nps.length) out.push(`naps ${nps.length} (avg ${fmtMin(Math.round(avg(nps)))})`);
+  GOOD.forEach(g => { const xs = days.flatMap(k=>onDay('good',k)).filter(x=>x.id===g.id); if(xs.length) out.push(`${g.n.toLowerCase()} ${xs.length}× (${xs.reduce((a,x)=>a+x.min,0)} min)`); });
+  const dd = days.filter(k=>onDay('drinks',k).length);
+  if(dd.length){ const all = dd.flatMap(k=>onDay('drinks',k)); out.push(`alcohol on ${dd.length} day${dd.length>1?'s':''}, ≈${all.reduce((a,d)=>a+stdDr(d),0).toFixed(1)} standard drinks total (max ≈${Math.max(...dd.map(k=>onDay('drinks',k).reduce((a,d)=>a+stdDr(d),0))).toFixed(1)} in a day)`); }
+  const nd = days.filter(k=>onDay('nic',k).length);
+  if(nd.length){ const all = nd.flatMap(k=>onDay('nic',k)); out.push(`nicotine avg ${(all.length/nd.length).toFixed(1)}/day on ${nd.length} logged day${nd.length>1?'s':''} (${kindCount(all,NIC)}), first ~${fromMins(avg(nd.map(k=>minsFrom(onDay('nic',k)[0].ts,DAY_START_H))),DAY_START_H)}`); }
   return out.length ? 'Tracking: ' + out.join('; ') : '';
 }
 function reportSheet(weeks=2){
@@ -1101,6 +1185,15 @@ function renderProgress(){
       h += `<div class="card"><h3>Water, food, sleep</h3><table class="mini"><thead><tr><th>Average</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
         ${row('Water / day','w')}${row('Meals / day','m')}${row('Portions / day','p')}${row('Snacks / day','fs')}${row('Last food','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
     }
+  }
+  if(S.good.length || S.drinks.length || S.nic.length){
+    const mon = mondayOf(new Date()), wkd = m => [...Array(7)].map((_,i)=>dkey(addDays(m,i))).filter(k=>k<=dkey());
+    const st = ks => { const g = ks.flatMap(k=>onDay('good',k)), d = ks.flatMap(k=>onDay('drinks',k)), n = ks.filter(k=>onDay('nic',k).length);
+      return {g: g.length?`${g.length}× · ${g.reduce((a,x)=>a+x.min,0)}m`:'—', d: d.length?`≈${d.reduce((a,x)=>a+stdDr(x),0).toFixed(1)}`:'0', n: n.length?(n.reduce((a,k)=>a+onDay('nic',k).length,0)/n.length).toFixed(1):'—'}; };
+    const A = st(wkd(mon)), B = st(wkd(addDays(mon,-7)));
+    const row = (l,f) => `<tr><td>${l}</td><td class="num"><b>${A[f]}</b></td><td class="num muted">${B[f]}</td></tr>`;
+    h += `<div class="card"><h3>Habits</h3><table class="mini"><thead><tr><th></th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
+      ${row('Meditation','g')}${row('Std drinks, total','d')}${row('Nicotine / day','n')}</tbody></table></div>`;
   }
   // heatmap: 12 weeks, columns=weeks
   const today = new Date(), tk = dkey(today), mon0 = addDays(mondayOf(today), -77);
@@ -1173,14 +1266,18 @@ function renderSettings(){
       <button class="tog ${c.home?'on':''}" data-act="snackplace" data-id="${x.id}" data-p="home" aria-pressed="${c.home}" aria-label="${x.n} at home">🏠</button>
       <button class="tog ${c.office?'on':''}" data-act="snackplace" data-id="${x.id}" data-p="office" aria-pressed="${c.office}" aria-label="${x.n} at the office">🏢</button>
       <input data-act="snacktarget" data-id="${x.id}" inputmode="numeric" value="${c.t}" aria-label="${x.n} daily target">`;}).join('')}</div></div>`;
+  h += `<div class="card"><h3>Habits on Today</h3><p class="small muted" style="margin-top:0">Hide what you don’t need. Hidden habits keep their data.</p>
+    <div class="row">${[['meditate','Meditation'],['alcohol','Alcohol'],['nicotine','Nicotine']].map(([id,n])=>`<button class="tog ${shown(id)?'on':''}" data-act="showtog" data-id="${id}" aria-pressed="${shown(id)}">${n}</button>`).join('')}</div></div>`;
   h += `<div class="card"><h3>Weekly goal</h3><div class="levels">`;
   [3,4,5,6].forEach(g => h += `<button class="lvl ${g===st.goal?'on':''}" data-act="goal" data-g="${g}"><b>${g}</b><span>days</span></button>`);
   h += `</div><p class="small muted" style="margin-top:10px">Days with snacks, a workout or a logged activity all count. Five is a good target.</p></div>`;
   h += `<div class="card"><h3>Your data</h3>
-    <p class="small muted" style="margin-top:0">Everything lives on this device only (${S.sessions.length} sessions, ${S.snackLog.length} snack sets, ${S.water.length+S.meals.length+S.sleep.length} water/meal/sleep taps, ${S.body.length} body check-ins). No account, nothing is uploaded. Export a backup once a month — and before switching phones.</p>
+    <p class="small muted" style="margin-top:0">Everything lives on this device only (${S.sessions.length} sessions, ${S.snackLog.length} snack sets, ${S.water.length+S.meals.length+S.sleep.length+S.naps.length+S.drinks.length+S.nic.length+S.good.length} other logs, ${S.body.length} body check-ins). No account, nothing is uploaded. Export a backup once a month — and before switching phones.</p>
+    <p class="small muted">Updates install by themselves and never touch your data. Don’t remove the home-screen icon: that deletes its data. Opening the link in Safari shows a separate, empty copy.</p>
     <div class="row"><button class="btn sm" data-act="export">Export backup</button><label class="btn sm" style="cursor:pointer">Import backup<input type="file" accept="application/json,.json" data-act="import" hidden></label><button class="btn sm danger" data-act="reset">Erase everything</button></div></div>`;
   h += `<div class="card"><h3>Theme</h3><div class="row">${['auto','light','dark'].map(m=>`<button class="btn sm ${(st.theme||'auto')===m?'pri':''}" data-act="theme" data-m="${m}">${m[0].toUpperCase()+m.slice(1)}</button>`).join('')}</div></div>`;
-  h += `<p class="tiny muted" style="text-align:center">Listen to your body: sharp pain means stop. Anything chest-related or dizzy, see a doctor before pushing on.</p>`;
+  h += `<p class="tiny muted" style="text-align:center">Version ${APP_VERSION}</p>
+  <p class="tiny muted" style="text-align:center">Listen to your body: sharp pain means stop. Anything chest-related or dizzy, see a doctor before pushing on.</p>`;
   return h;
 }
 
@@ -1314,6 +1411,16 @@ document.addEventListener('click', e => {
     case 'repskip': S.settings.reported[a.dataset.w] = 'skip'; save(); render(); break;
     case 'water': track('water', +a.dataset.n); break;
     case 'mealask': mealAsk(); break;
+    case 'good': { const n = +a.dataset.n, g = GOOD.find(x=>x.id===a.dataset.id); addLog('good', {ts:Date.now(), id:g.id, min:n}, `${g.n} ${n} min · nice`); break; }
+    case 'goodsheet': goodSheet(a.dataset.id); break;
+    case 'drink': { const d = {ts:Date.now(), k:a.dataset.k, ml:+a.dataset.ml}; addLog('drinks', d, `${DRINKS[d.k].ic} ${drLabel(d)} at ${hm(d.ts)}`); break; }
+    case 'drinksheet': drinkSheet(); break;
+    case 'nic': { const k = a.dataset.k; S.settings.nicLast = k; addLog('nic', {ts:Date.now(), k}, `${NIC[k]} at ${hm(Date.now())} · ${onDay('nic',lday(Date.now())).length+1} today`); break; }
+    case 'nicsheet': nicSheet(); break;
+    case 'mv': { const col = a.dataset.col; if(!['drinks','nic','good'].includes(col)) break; const x = S[col].find(e=>String(e.ts)===a.dataset.ts); if(x){ x.ts = Math.min(Date.now(), x.ts + a.dataset.d*6e4); save(); render(); RESHEET && RESHEET(); } break; }
+    case 'del': { const col = a.dataset.col; if(!['drinks','nic','good'].includes(col)) break; S[col] = S[col].filter(e=>String(e.ts)!==a.dataset.ts); save(); render(); RESHEET && RESHEET(); break; }
+    case 'nap': { const k = a.dataset.k, v = +a.dataset.v; S.naps = S.naps.filter(n=>n.date!==k); if(v) S.naps.push({date:k, min:v}); save(); render(); sleepSheet(); break; }
+    case 'showtog': S.settings.show[a.dataset.id] = !shown(a.dataset.id); save(); render(); break;
     case 'meal': track('meal', +a.dataset.v || 1); break;
     case 'mealsz': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ m.sz = +a.dataset.v; save(); render(); mealSheet(); } break; }
     case 'fsnack': track('fsnack'); break;
@@ -1897,7 +2004,18 @@ window.addEventListener('beforeunload', e => { if(P && !P.finished){ e.preventDe
 
 applyTheme();
 render();
-if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
+// new versions install in the background and the app reloads itself (never mid-workout); data stays in localStorage
+if('serviceWorker' in navigator && location.protocol==='https:'){
+  const hadCtl = !!navigator.serviceWorker.controller; let reloading = false;
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    document.addEventListener('visibilitychange', () => { if(!document.hidden) reg.update().catch(()=>{}); });
+  }).catch(()=>{});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if(!hadCtl || reloading) return;
+    const go = () => { if(P && !P.finished) return setTimeout(go, 5000); if($('#scrim')) return setTimeout(go, 3000); reloading = true; location.reload(); };
+    go();
+  });
+}
 if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
 // keep "today" right when the app is reopened on a new day
 let lastDay = dkey()+lday(Date.now());
