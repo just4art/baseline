@@ -1,5 +1,5 @@
 // Baseline service worker: works offline, picks up new versions when online.
-const CACHE = 'baseline-v3';
+const CACHE = 'baseline-v4';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

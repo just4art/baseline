@@ -116,6 +116,11 @@ button{cursor:pointer}
 .step .lb{font-weight:700;min-width:28px}
 .step .tm{font-family:"Barlow Condensed",sans-serif;font-size:24px;font-weight:700;min-width:62px;text-align:center}
 .step .ctl{display:flex;gap:6px;align-items:center}
+.night{border-top:1px solid var(--line);padding:12px 0}
+.night:first-of-type{border-top:none}
+.night .row{margin-top:6px}
+.tl{flex:1;display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--muted);font-weight:600}
+.tin{font:inherit;font-size:20px;font-weight:700;color:var(--text);background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:8px 10px;min-height:48px;width:100%;-webkit-appearance:none;appearance:none}
 
 /* tip */
 .tip{border-left:4px solid var(--ball);background:var(--surface)}
@@ -456,10 +461,20 @@ const hm = ts => { const d = new Date(ts); return String(d.getHours()).padStart(
 const dur = ms => { const m = Math.round(ms/6e4); return `${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`; };
 const litres = ml => `${+(ml/1000).toFixed(2)} L`;
 const waterOn = k => S.water.filter(w=>lday(w.ts)===k).reduce((a,w)=>a+w.ml,0);
-const mealsOn = k => S.meals.filter(m=>lday(m.ts)===k).sort((a,b)=>a.ts-b.ts);
-const sleepOn = k => S.sleep.filter(x=>x.wake && lday(x.wake)===k).sort((a,b)=>a.wake-b.wake).pop() || null;
-// an open night: bed tapped, no wake yet, and recent enough to still be tonight
-const openSleep = () => { const x = [...S.sleep].sort((a,b)=>(b.bed||b.wake)-(a.bed||a.wake))[0]; return x && x.bed && !x.wake && Date.now()-x.bed < 16*3600e3 ? x : null; };
+const foodOn = k => S.meals.filter(m=>lday(m.ts)===k).sort((a,b)=>a.ts-b.ts);
+const mealsOn = k => foodOn(k).filter(m=>m.k!=='snack');
+const fsnOn = k => foodOn(k).filter(m=>m.k==='snack');
+// a night belongs to the calendar day you woke up
+const sleepOn = k => S.sleep.filter(x=>x.wake && x.bed && dkey(new Date(x.wake))===k).sort((a,b)=>a.wake-b.wake).pop() || null;
+const hhmm = s => { const m = /^(\d{1,2}):(\d{2})/.exec(s||''); return m ? (+m[1])*60 + (+m[2]) : null; };
+// bedtime on or after wake time means it was the evening before
+function nightTs(k, bed, wake){
+  const d0 = parseKey(k).getTime(), w = d0 + hhmm(wake)*6e4; let b = d0 + hhmm(bed)*6e4;
+  if(b >= w) b -= 864e5;
+  return {bed:b, wake:w};
+}
+const DAYN = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const nightKeys = () => [0,1,2].map(i=>dkey(addDays(new Date(),-i)));
 // minutes past an anchor hour, so averages work across midnight
 const minsFrom = (ts, h0) => { const d = new Date(ts); return ((d.getHours()-h0+24)%24)*60 + d.getMinutes(); };
 const fromMins = (m, h0) => { m = Math.round(m); const t = (m + h0*60) % 1440; return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0'); };
@@ -512,7 +527,7 @@ function load(){
       return {...def, ...d, settings:st,
         sessions:Array.isArray(d.sessions)?d.sessions:[], habits:obj(d.habits), body:Array.isArray(d.body)?d.body:[],
         snackLog:Array.isArray(d.snackLog)?d.snackLog:[], checkins:Array.isArray(d.checkins)?d.checkins:[],
-        water:Array.isArray(d.water)?d.water:[], meals:Array.isArray(d.meals)?d.meals:[], sleep:Array.isArray(d.sleep)?d.sleep:[]};
+        water:Array.isArray(d.water)?d.water:[], meals:Array.isArray(d.meals)?d.meals:[], sleep:Array.isArray(d.sleep)?d.sleep.filter(x=>x&&x.bed&&x.wake):[]};
     }
   }catch(e){}
   return DEFAULT();
@@ -703,7 +718,7 @@ function renderToday(){
     h += `<div class="card"><h3>How it works</h3>
       <p><b>Snacks first.</b> Short sets during the day: do 10 squats, tap <b>+10</b>. Any snack makes it an active day. Switch between Home and Office for moves that fit where you are.</p>
       <p class="muted small">Got 8–25 minutes? The guided sessions further down are there, with a stick figure for every move. The app suggests small steps up once snacks are a habit, never more than one at a time.</p>
-      <p class="muted small">Water, meals and sleep are one tap each. No food rules, just times, so patterns show up. Once a week the app builds a report you copy with one tap and paste into a chat with a coach or an AI assistant.</p>
+      <p class="muted small">Water and food are one tap each, and sleep you fill in for the last few nights. No food rules, just times, so patterns show up. Once a week the app builds a report you copy with one tap and paste into a chat with a coach or an AI assistant.</p>
       <div class="row" style="margin-top:8px"><button class="btn sm" data-act="welcomed">Got it</button></div></div>`;
   }
 
@@ -856,23 +871,21 @@ function nudgeCard(){
 /* ---------- water, meals, sleep ---------- */
 function trackCard(){
   const k = lday(Date.now()), ml = waterOn(k), goal = S.settings.waterGoal, gl = S.settings.glass;
-  const ms = mealsOn(k), op = openSleep(), sl = sleepOn(dkey());
-  const w = Math.min(100, ml/goal*100);
-  let h = `<div class="card"><h3 style="margin:0 0 2px">Water, meals, sleep</h3><p class="small muted" style="margin:0">One tap each. No rules yet, just data.</p>`;
+  const fd = foodOn(k), w = Math.min(100, ml/goal*100), nk = nightKeys();
+  let h = `<div class="card"><h3 style="margin:0 0 2px">Water, food, sleep</h3><p class="small muted" style="margin:0">No rules yet, just data.</p>`;
   h += `<div class="snack first" style="margin-top:6px"><div class="r">
       <button class="nm" data-act="watersheet">Water<small>goal ${litres(goal)} · glass ${gl} ml</small></button>
       <span class="cnt">${ml?litres(ml).replace(' L','<span> L</span>'):'0'}</span>
       <button class="add" data-act="water" data-n="${gl}" aria-label="Add a glass, ${gl} ml">+${gl}</button><button class="add big" data-act="water" data-n="500" aria-label="Add 500 ml">+500</button>
     </div><div class="sbar"><i class="${w>=100?'full':''}" style="width:${w}%"></i></div></div>`;
   h += `<div class="snack"><div class="r">
-      <button class="nm" data-act="mealsheet">Meals<small class="times">${ms.length?ms.map(m=>hm(m.ts)).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
-      <span class="cnt">${ms.length}</span>
-      <button class="add big wide" data-act="meal">+ Meal</button>
+      <button class="nm" data-act="mealsheet">Food<small class="times">${fd.length?fd.map(m=>(m.k==='snack'?'🍪':'')+hm(m.ts)).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
+      <button class="add wide" data-act="fsnack">+ Snack</button><button class="add big wide" data-act="meal">+ Meal</button>
     </div></div>`;
-  const slTxt = op ? `in bed since ${hm(op.bed)}` : sl ? `${sl.bed?hm(sl.bed):'?'} → ${hm(sl.wake)}${sl.bed?' · <b>'+dur(sl.wake-sl.bed)+'</b>':''} · edit ›` : 'tap at bedtime and when you wake';
+  const nights = nk.map(x=>{ const sl = sleepOn(x); return `${DAYN[parseKey(x).getDay()]} ${sl?'<b>'+dur(sl.wake-sl.bed)+'</b>':'—'}`; }).join(' · ');
   h += `<div class="snack"><div class="r">
-      <button class="nm" data-act="sleepsheet">Sleep<small class="times">${slTxt}</small></button>
-      ${op ? `<button class="add big wide" data-act="wake">☀️ Up</button>` : `<button class="add wide" data-act="wake" aria-label="Woke up">☀️ Up</button><button class="add big wide" data-act="bed">🌙 Bed</button>`}
+      <button class="nm" data-act="sleepsheet">Sleep<small class="times">${nights}</small></button>
+      <button class="add wide ${sleepOn(nk[0])?'':'big'}" data-act="sleepsheet">+ Log</button>
     </div></div>`;
   return h + `</div>`;
 }
@@ -883,12 +896,7 @@ function track(act, n){
   if(act==='water'){ snap('water'); S.water.push({ts:now, ml:n}); const v = waterOn(lday(now)), g = S.settings.waterGoal;
     save(); render(); undoToast(v>=g && v-n<g ? `Water goal hit · ${litres(v)} 💧` : `+${n} ml · ${litres(v)} today`); }
   if(act==='meal'){ snap('meals'); S.meals.push({ts:now}); save(); render(); undoToast(`Meal at ${hm(now)} · ${mealsOn(lday(now)).length} today`); }
-  if(act==='bed'){ snap('sleep'); S.sleep.push({bed:now, wake:null}); save(); render(); undoToast(`Good night · ${hm(now)}`); }
-  if(act==='wake'){
-    snap('sleep'); const op = openSleep();
-    if(op){ op.wake = now; save(); render(); undoToast(`Slept ${dur(now-op.bed)} · ${hm(op.bed)} → ${hm(now)}`); }
-    else { S.sleep.push({bed:null, wake:now}); save(); render(); sleepSheet(); }
-  }
+  if(act==='fsnack'){ snap('meals'); S.meals.push({ts:now, k:'snack'}); save(); render(); undoToast(`Snack at ${hm(now)}`); }
 }
 function undoToast(msg){
   const t = $('#toast'); t.classList.add('act');
@@ -900,21 +908,23 @@ const stepper = (lab, ts, act, attrs) => `<div class="step"><span class="lb">${l
     <span class="tm">${ts?hm(ts):'—'}</span>
     <button class="add sm" data-act="${act}" ${attrs} data-d="15">+15</button><button class="add sm" data-act="${act}" ${attrs} data-d="60">+1h</button></span></div>`;
 function mealSheet(){
-  const k = lday(Date.now()), ms = mealsOn(k);
-  openSheet(`<div class="row between"><h2>Meals today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">Forgot to tap? Add one and nudge the time. The day runs until ${DAY_START_H}:00, so a late-night meal stays with this evening.</p>
-    ${ms.length ? ms.map((m,i)=>stepper(`#${i+1}`, m.ts, 'mealmv', `data-ts="${m.ts}"`).replace('</span></div>',`<button class="ib" data-act="mealdel" data-ts="${m.ts}" aria-label="Delete">✕</button></span></div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
-    <div class="row" style="margin-top:10px"><button class="btn sm" data-act="mealpast">+ Meal I forgot (1 h ago)</button></div>`);
+  const k = lday(Date.now()), ms = foodOn(k);
+  openSheet(`<div class="row between"><h2>Food today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">🍽️ meal · 🍪 snack. Forgot to tap? Add one and nudge the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
+    ${ms.length ? ms.map(m=>stepper(m.k==='snack'?'🍪':'🍽️', m.ts, 'mealmv', `data-ts="${m.ts}"`).replace('</span></div>',`<button class="ib" data-act="mealdel" data-ts="${m.ts}" aria-label="Delete">✕</button></span></div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
+    <div class="row" style="margin-top:10px"><button class="btn sm" data-act="mealpast">+ Meal I forgot</button><button class="btn sm" data-act="mealpast" data-k="snack">+ Snack I forgot</button></div>`);
 }
+const SLDRAFT = {};
 function sleepSheet(){
-  const op = openSleep(), x = op || [...S.sleep].filter(e=>e.wake).sort((a,b)=>b.wake-a.wake)[0];
-  if(!x){ openSheet(`<div class="row between"><h2>Sleep</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div><p>Tap <b>🌙 Bed</b> when you go to sleep and <b>☀️</b> when you wake up.</p>`); return; }
-  const id = `data-id="${S.sleep.indexOf(x)}"`;
-  openSheet(`<div class="row between"><h2>${op?'Tonight':'Last sleep'}</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">Tapped late or forgot? Nudge the times.${x.bed&&x.wake?` Total: <b>${dur(x.wake-x.bed)}</b>`:''}</p>
-    ${x.bed ? stepper('Asleep', x.bed, 'sleepmv', id+' data-f="bed"') : `<div class="step"><span class="lb">Asleep</span><button class="btn sm" data-act="sleepset" ${id}>Set (7 h before waking)</button></div>`}
-    ${x.wake ? stepper('Awake', x.wake, 'sleepmv', id+' data-f="wake"') : ''}
-    <div class="row" style="margin-top:10px"><button class="btn sm danger" data-act="sleepdel" ${id}>Delete this night</button></div>`);
+  const rows = nightKeys().map((k,i) => {
+    const sl = sleepOn(k), dr = SLDRAFT[k] || {}, prev = DAYN[addDays(parseKey(k),-1).getDay()];
+    const bv = sl ? hm(sl.bed) : (dr.bed||''), wv = sl ? hm(sl.wake) : (dr.wake||'');
+    return `<div class="night"><div class="row between"><b>${i===0?'Last night':`${prev} → ${DAYN[parseKey(k).getDay()]}`}</b><span class="small muted">${sl?dur(sl.wake-sl.bed)+` <button class="link" data-act="sleepdel" data-k="${k}">clear</button>`:'not logged'}</span></div>
+      <div class="row"><label class="tl">Fell asleep<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="bed" value="${bv}"></label>
+      <label class="tl">Woke up<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="wake" value="${wv}"></label></div></div>`;
+  }).join('');
+  openSheet(`<div class="row between"><h2>Sleep</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Fill in the last few nights whenever you remember. Rough times are fine.</p>${rows}`);
 }
 function waterSheet(){
   const st = S.settings, k = lday(Date.now());
@@ -966,6 +976,7 @@ function reportText(weeks){
       d.o.forEach(o => parts.push(`${o.act} ${o.secs/60|0}min`));
       const ml = waterOn(k); if(ml) parts.push(`water ${litres(ml)}`);
       const ms = mealsOn(k); if(ms.length) parts.push(`meals ${ms.map(m=>hm(m.ts)).join(' ')}`);
+      const fs = fsnOn(k); if(fs.length) parts.push(`food snacks ${fs.map(m=>hm(m.ts)).join(' ')}`);
       const sl = sleepOn(k); if(sl) parts.push(`sleep ${sl.bed?hm(sl.bed):'?'}→${hm(sl.wake)}${sl.bed?` (${dur(sl.wake-sl.bed)})`:''}`);
       const hrs = S.snackLog.filter(e=>e.date===k && e.n>0).map(e=>new Date(e.ts).getHours());
       if(hrs.length) parts.push(`snack times: ${[...new Set(hrs)].sort((a,b)=>a-b).map(x=>x+'h').join(' ')}`);
@@ -983,7 +994,7 @@ function reportText(weeks){
   }
   const ws = S.body.filter(b=>b.waist!=null).sort((a,b)=>a.date<b.date?-1:1);
   if(ws.length>1) L.push('', `Waist trend: ${ws[0].waist} cm (${fmtDate(ws[0].date)}) → ${ws[ws.length-1].waist} cm (${fmtDate(ws[ws.length-1].date)})`);
-  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so meals after midnight belong to the evening before. Sleep is listed on the day you woke up.`,
+  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so food after midnight belongs to the evening before. "Food snacks" are eating, not exercise. Sleep is listed on the day you woke up.`,
     'Please review this. First ask me 3-5 quick questions I can answer in a word or two (energy, hunger, what got in the way, anything to change in the app). Then tell me what is working and the one change for next week.');
   return L.join('\n');
 }
@@ -991,7 +1002,11 @@ function trackSummary(days){
   const out = [];
   const w = days.map(waterOn).filter(Boolean);
   if(w.length) out.push(`water avg ${litres(Math.round(avg(w)/50)*50)} on ${w.length} logged day${w.length>1?'s':''}, goal hit ${w.filter(v=>v>=S.settings.waterGoal).length}d`);
-  const md = days.map(mealsOn).filter(a=>a.length);
+  const md = days.map(mealsOn).filter(a=>a.length), fdk = days.filter(k=>foodOn(k).length);
+  if(fdk.length){
+    const lateF = fdk.filter(k=>{ const a = foodOn(k); return minsFrom(a[a.length-1].ts, DAY_START_H) >= (23-DAY_START_H)*60; }).length;
+    out.push(`food logged on ${fdk.length} day${fdk.length>1?'s':''}, food snacks avg ${avg(fdk.map(k=>fsnOn(k).length)).toFixed(1)}/day, anything eaten after 23:00 on ${lateF}d`);
+  }
   if(md.length){
     const late = md.filter(a=>minsFrom(a[a.length-1].ts, DAY_START_H) >= (23-DAY_START_H)*60).length;
     out.push(`meals avg ${avg(md.map(a=>a.length)).toFixed(1)}/day on ${md.length} logged day${md.length>1?'s':''}, first ~${fromMins(avg(md.map(a=>minsFrom(a[0].ts,DAY_START_H))),DAY_START_H)}, last ~${fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H)}, last meal after 23:00 on ${late}d`);
@@ -1053,16 +1068,17 @@ function renderProgress(){
       <div class="row" style="margin-top:12px"><button class="btn sm pri" data-act="copyweek">Copy report</button><button class="btn sm" data-act="report" data-n="2">View report</button></div></div>`;
     const wk = m => [...Array(7)].map((_,i)=>dkey(addDays(m,i))).filter(k=>k<=dkey());
     const stat = ks => {
-      const w = ks.map(waterOn).filter(Boolean), md = ks.map(mealsOn).filter(a=>a.length), sl = ks.map(sleepOn).filter(x=>x&&x.bed);
-      return {w: w.length?litres(Math.round(avg(w)/50)*50):'—', m: md.length?avg(md.map(a=>a.length)).toFixed(1):'—',
+      const w = ks.map(waterOn).filter(Boolean), md = ks.map(foodOn).filter(a=>a.length), sl = ks.map(sleepOn).filter(x=>x&&x.bed);
+      return {w: w.length?litres(Math.round(avg(w)/50)*50):'—', m: md.length?avg(md.map(a=>a.filter(m=>m.k!=='snack').length)).toFixed(1):'—',
         lm: md.length?fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H):'—',
+        fs: md.length?avg(ks.filter(k=>foodOn(k).length).map(k=>fsnOn(k).length)).toFixed(1):'—',
         s: sl.length?dur(avg(sl.map(x=>x.wake-x.bed))):'—', b: sl.length?fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18):'—'};
     };
     if(S.water.length || S.meals.length || S.sleep.length){
       const A = stat(wk(mon)), B = stat(wk(addDays(mon,-7)));
       const row = (l,f) => `<tr><td>${l}</td><td class="num"><b>${A[f]}</b></td><td class="num muted">${B[f]}</td></tr>`;
-      h += `<div class="card"><h3>Water, meals, sleep</h3><table class="mini"><thead><tr><th>Average</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
-        ${row('Water / day','w')}${row('Meals / day','m')}${row('Last meal','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
+      h += `<div class="card"><h3>Water, food, sleep</h3><table class="mini"><thead><tr><th>Average</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
+        ${row('Water / day','w')}${row('Meals / day','m')}${row('Snacks / day','fs')}${row('Last food','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
     }
   }
   // heatmap: 12 weeks, columns=weeks
@@ -1277,21 +1293,16 @@ document.addEventListener('click', e => {
     case 'repskip': S.settings.reported[a.dataset.w] = 'skip'; save(); render(); break;
     case 'water': track('water', +a.dataset.n); break;
     case 'meal': track('meal'); break;
-    case 'bed': track('bed'); break;
-    case 'wake': track('wake'); break;
+    case 'fsnack': track('fsnack'); break;
     case 'undo2': if(UNDO){ UNDO(); UNDO = null; save(); render(); toast('Undone'); } break;
     case 'watersheet': waterSheet(); break;
     case 'waterset': S.settings[a.dataset.k] = +a.dataset.v; save(); render(); waterSheet(); break;
     case 'mealsheet': mealSheet(); break;
     case 'mealmv': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ const nt = Math.min(Date.now(), m.ts + a.dataset.d*6e4); m.ts = nt; save(); render(); mealSheet(); } break; }
     case 'mealdel': S.meals = S.meals.filter(x=>String(x.ts)!==a.dataset.ts); save(); render(); mealSheet(); break;
-    case 'mealpast': S.meals.push({ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
+    case 'mealpast': S.meals.push({...(a.dataset.k?{k:a.dataset.k}:{}), ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
     case 'sleepsheet': sleepSheet(); break;
-    case 'sleepmv': { const x = S.sleep[+a.dataset.id]; if(x){ const f = a.dataset.f, v = Math.min(Date.now(), x[f] + a.dataset.d*6e4);
-      if(f==='bed' && x.wake && v >= x.wake - 15*6e4) break; if(f==='wake' && x.bed && v <= x.bed + 15*6e4) break;
-      x[f] = v; save(); render(); sleepSheet(); } break; }
-    case 'sleepset': { const x = S.sleep[+a.dataset.id]; if(x && x.wake){ x.bed = x.wake - 7*3600e3; save(); render(); sleepSheet(); } break; }
-    case 'sleepdel': S.sleep.splice(+a.dataset.id, 1); save(); render(); closeSheet(); toast('Deleted'); break;
+    case 'sleepdel': S.sleep = S.sleep.filter(x=>!(x.wake && dkey(new Date(x.wake))===a.dataset.k)); delete SLDRAFT[a.dataset.k]; save(); render(); sleepSheet(); break;
     case 'report': reportSheet(+a.dataset.n || 2); break;
     case 'copyrep': copyReport(); break;
     case 'sharerep': navigator.share({title:'Baseline report', text:$('#repTxt').value}).catch(()=>{}); break;
@@ -1324,6 +1335,15 @@ document.addEventListener('change', e => {
   const a = e.target.closest('[data-act]'); if(!a) return;
   if(a.dataset.act==='set'){ S.settings[a.dataset.k] = a.checked; save(); }
   if(a.dataset.act==='import' && a.files[0]) importData(a.files[0]);
+  if(a.dataset.act==='sleeptime'){
+    const k = a.dataset.k, sl = sleepOn(k), dr = SLDRAFT[k] = SLDRAFT[k] || (sl ? {bed:hm(sl.bed), wake:hm(sl.wake)} : {});
+    dr[a.dataset.f] = a.value;
+    if(hhmm(dr.bed)!=null && hhmm(dr.wake)!=null){
+      S.sleep = S.sleep.filter(x=>!(x.wake && dkey(new Date(x.wake))===k)); S.sleep.push(nightTs(k, dr.bed, dr.wake));
+      delete SLDRAFT[k]; S.settings.welcomed = true; save(); render(); sleepSheet();
+      const n = sleepOn(k); toast(`Saved · ${dur(n.wake-n.bed)}`);
+    }
+  }
   if(a.dataset.act==='snacktarget'){
     const s = SN[a.dataset.id], v = Math.round(num(a.value) || 0);
     if(v > 0 && v < 100000){ S.settings.snacks[s.id] = {...(S.settings.snacks[s.id]||{}), t:v}; save(); toast(`${s.n}: ${fmtAmt(s,v)} a day`); }
