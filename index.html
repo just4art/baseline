@@ -116,6 +116,8 @@ button{cursor:pointer}
 .step .lb{font-weight:700;min-width:28px}
 .step .tm{font-family:"Barlow Condensed",sans-serif;font-size:24px;font-weight:700;min-width:62px;text-align:center}
 .step .ctl{display:flex;gap:6px;align-items:center}
+.step .lb{min-width:44px}
+.tin.sm{flex:1;font-size:18px;min-height:44px;padding:6px 10px;width:auto}
 .night{border-top:1px solid var(--line);padding:12px 0}
 .szgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
 .szb{border:1.5px solid var(--accent);background:var(--surface);color:var(--text);border-radius:14px;padding:16px 10px;text-align:center;touch-action:manipulation}
@@ -542,7 +544,7 @@ const num = v => { const n = parseFloat(String(v).replace(',','.')); return isFi
 
 /* ================= storage ================= */
 const KEY = 'baseline.v1';
-const APP_VERSION = 6;
+const APP_VERSION = 7;
 const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',waterGoal:2000,glass:250,reported:{},show:{},nicLast:'gum',snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[],water:[],meals:[],sleep:[],naps:[],drinks:[],nic:[],good:[]});
 function load(){
   try{
@@ -561,6 +563,9 @@ function load(){
   return DEFAULT();
 }
 let S = load();
+// every editable log entry gets a stable id, so editing a time never hits the wrong row
+const newUid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+['meals','drinks','nic','good'].forEach(c => S[c].forEach((x,i) => { if(!x.uid) x.uid = `${x.ts.toString(36)}-${i}`; }));
 if(!S.settings.mode) S.settings.mode = S.settings.short ? 'short' : 'full';
 const MODES = {full:'Full', short:'Short', mini:'8-min'};
 const UNLOCK = 6; // sessions at a level before a level-up is offered
@@ -924,24 +929,25 @@ function track(act, n){
   const now = Date.now(); S.settings.welcomed = true;
   if(act==='water'){ snap('water'); S.water.push({ts:now, ml:n}); const v = waterOn(lday(now)), g = S.settings.waterGoal;
     save(); render(); undoToast(v>=g && v-n<g ? `Water goal hit · ${litres(v)} 💧` : `+${n} ml · ${litres(v)} today`); }
-  if(act==='meal'){ snap('meals'); S.meals.push({ts:now, sz:n||1}); closeSheet(); save(); render(); undoToast(`${SIZES.find(x=>x.v===(n||1)).n} meal at ${hm(now)} · ${fmtP(portionsOn(lday(now)))} portion${portionsOn(lday(now))===1?'':'s'} today`); }
-  if(act==='fsnack'){ snap('meals'); S.meals.push({ts:now, k:'snack'}); save(); render(); undoToast(`Snack at ${hm(now)}`); }
+  if(act==='meal'){ snap('meals'); S.meals.push({ts:now, sz:n||1, uid:newUid()}); closeSheet(); save(); render(); undoToast(`${SIZES.find(x=>x.v===(n||1)).n} meal at ${hm(now)} · ${fmtP(portionsOn(lday(now)))} portion${portionsOn(lday(now))===1?'':'s'} today`); }
+  if(act==='fsnack'){ snap('meals'); S.meals.push({ts:now, k:'snack', uid:newUid()}); save(); render(); undoToast(`Snack at ${hm(now)}`); }
 }
 function undoToast(msg){
   const t = $('#toast'); t.classList.add('act');
   t.innerHTML = `<span>${esc(msg)}</span><button data-act="undo2">Undo</button>`;
   t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(()=>{ t.classList.remove('on','act'); }, 4000);
 }
-const stepper = (lab, ts, act, attrs) => `<div class="step"><span class="lb">${lab}</span><span class="ctl">
-    <button class="add sm" data-act="${act}" ${attrs} data-d="-60">−1h</button><button class="add sm" data-act="${act}" ${attrs} data-d="-15">−15</button>
-    <span class="tm">${ts?hm(ts):'—'}</span>
-    <button class="add sm" data-act="${act}" ${attrs} data-d="15">+15</button><button class="add sm" data-act="${act}" ${attrs} data-d="60">+1h</button></span></div>`;
+// one log entry: label, iOS time wheel, delete. Changing the time doesn't redraw the sheet, so rows never jump.
+const timeRow = (lab, x, col) => `<div class="step"><span class="lb">${lab}</span>
+    <input type="time" class="tin sm" data-act="logtime" data-col="${col}" data-uid="${x.uid}" value="${hm(x.ts)}" aria-label="${esc(String(lab))} time">
+    <button class="ib" data-act="del" data-col="${col}" data-uid="${x.uid}" aria-label="Delete">✕</button></div>`;
+let DIRTY = false; // main screen redraws when the sheet closes
 function mealSheet(){
   const k = lday(Date.now()), ms = foodOn(k);
   openSheet(`<div class="row between"><h2>Food today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">🍽️ meal · 🍪 snack. Tap a size under a meal to fix it. Forgot to tap? Add one and nudge the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
-    ${ms.length ? ms.map(m=>stepper(m.k==='snack'?'🍪':'🍽️', m.ts, 'mealmv', `data-ts="${m.ts}"`).replace('</span></div>',`<button class="ib" data-act="mealdel" data-ts="${m.ts}" aria-label="Delete">✕</button></span></div>`)
-      + (m.k==='snack' ? '' : `<div class="row szrow">${SIZES.map(x=>`<button class="tog ${msz(m)===x.v?'on':''}" data-act="mealsz" data-ts="${m.ts}" data-v="${x.v}">${x.n}</button>`).join('')}</div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
+    <p class="small muted">🍽️ meal · 🍪 snack. Tap a time to change it, or a size under a meal. Forgot one? Add it, then set the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
+    ${ms.length ? ms.map(m=>timeRow(m.k==='snack'?'🍪':'🍽️', m, 'meals')
+      + (m.k==='snack' ? '' : `<div class="row szrow">${SIZES.map(x=>`<button class="tog ${msz(m)===x.v?'on':''}" data-act="mealsz" data-uid="${m.uid}" data-v="${x.v}">${x.n}</button>`).join('')}</div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
     <div class="row" style="margin-top:10px"><button class="btn sm" data-act="mealpast">+ Meal I forgot</button><button class="btn sm" data-act="mealpast" data-k="snack">+ Snack I forgot</button></div>`);
 }
 function mealAsk(){
@@ -975,16 +981,16 @@ function habitsCard(){
     ${rows.map((r,i)=>`<div class="snack ${i?'':'first'}" ${i?'':'style="margin-top:6px"'}>${r}</div>`).join('')}</div>`;
 }
 function addLog(col, entry, msg){
-  snap(col); S[col].push(entry); S.settings.welcomed = true; save(); render();
+  snap(col); entry.uid = newUid(); S[col].push(entry); S.settings.welcomed = true; save(); render();
   if($('#scrim') && RESHEET) RESHEET();
   undoToast(msg);
 }
-const logList = (col, items, label) => items.length ? items.map(x=>stepper(label(x), x.ts, 'mv', `data-col="${col}" data-ts="${x.ts}"`).replace('</span></div>',`<button class="ib" data-act="del" data-col="${col}" data-ts="${x.ts}" aria-label="Delete">✕</button></span></div>`)).join('') : '<p class="small muted">Nothing today.</p>';
+const logList = (col, items, label) => items.length ? items.map(x=>timeRow(label(x), x, col)).join('') : '<p class="small muted">Nothing today.</p>';
 function drinkSheet(){
   RESHEET = drinkSheet;
   const ds = onDay('drinks', lday(Date.now())), sd = ds.reduce((a,d)=>a+stdDr(d),0);
   openSheet(`<div class="row between"><h2>Alcohol today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">${ds.length?`≈ ${sd.toFixed(1)} standard drinks (10 g alcohol each). `:''}Forgot one? Add it and nudge the time back.</p>
+    <p class="small muted">${ds.length?`≈ ${sd.toFixed(1)} standard drinks (10 g alcohol each). `:''}Forgot one? Add it, then tap its time to set when.</p>
     <div class="szgrid">${[['beer',330,'Beer','0.33 L'],['beer',500,'Beer','0.5 L'],['wine',150,'Wine','a glass'],['spirit',40,'Spirits','a shot']].map(([k,ml,n,d])=>`<button class="szb" data-act="drink" data-k="${k}" data-ml="${ml}"><b>${DRINKS[k].ic} ${n}</b><span>${d}</span></button>`).join('')}</div>
     <div style="margin-top:12px">${logList('drinks', ds, d=>DRINKS[d.k].ic)}</div>`);
 }
@@ -992,9 +998,9 @@ function nicSheet(){
   RESHEET = nicSheet;
   const ns = onDay('nic', lday(Date.now()));
   openSheet(`<div class="row between"><h2>Nicotine today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">Tap what you just had. The main button remembers your last choice.</p>
+    <p class="small muted">Tap what you had. Earlier ones: add them, then tap each time to set it. The main button remembers your last choice.</p>
     <div class="szgrid">${Object.entries(NIC).map(([k,n])=>`<button class="szb" data-act="nic" data-k="${k}"><b>${n}</b><span>${onDay('nic',lday(Date.now())).filter(x=>x.k===k).length} today</span></button>`).join('')}</div>
-    <div style="margin-top:12px">${logList('nic', ns, x=>({gum:'Gum',iqos:'IQ',cig:'Cig',tab:'Tab'})[x.k])}</div>`);
+    <div style="margin-top:12px">${logList('nic', ns, x=>NIC[x.k])}</div>`);
 }
 function goodSheet(id){
   const g = GOOD.find(x=>x.id===id) || GOOD[0]; RESHEET = () => goodSheet(g.id);
@@ -1009,7 +1015,7 @@ function sleepSheet(){
   const rows = nightKeys().map((k,i) => {
     const sl = sleepOn(k), dr = SLDRAFT[k] || {}, prev = DAYN[addDays(parseKey(k),-1).getDay()];
     const bv = sl ? hm(sl.bed) : (dr.bed||''), wv = sl ? hm(sl.wake) : (dr.wake||'');
-    return `<div class="night"><div class="row between"><b>${i===0?'Last night':`${prev} → ${DAYN[parseKey(k).getDay()]}`}</b><span class="small muted">${sl?dur(sl.wake-sl.bed)+` <button class="link" data-act="sleepdel" data-k="${k}">clear</button>`:'not logged'}</span></div>
+    return `<div class="night"><div class="row between"><b>${i===0?'Last night':`${prev} → ${DAYN[parseKey(k).getDay()]}`}</b><span class="small muted nst">${sl?dur(sl.wake-sl.bed)+` <button class="link" data-act="sleepdel" data-k="${k}">clear</button>`:'not logged'}</span></div>
       <div class="row"><label class="tl">Fell asleep<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="bed" value="${bv}"></label>
       <label class="tl">Woke up<input type="time" class="tin" data-act="sleeptime" data-k="${k}" data-f="wake" value="${wv}"></label></div>
       <div class="naprow"><span class="small muted">Nap ${i===0?'today':'that day'}</span>${[0,20,30,45,60,90,120].map(v=>`<button class="tog ${napOn(k)===v?'on':''}" data-act="nap" data-k="${k}" data-v="${v}">${v?fmtMin(v):'none'}</button>`).join('')}</div></div>`;
@@ -1346,7 +1352,7 @@ function openSheet(html){
   $('#toast')?.classList.remove('on','act');
   s.querySelector('button, input, select')?.focus();
 }
-function closeSheet(){ $('#scrim')?.remove(); }
+function closeSheet(){ $('#scrim')?.remove(); if(DIRTY){ DIRTY = false; render(); } }
 
 function previewSheet(tid){
   const t = TPL[tid], mode = curMode(), steps = buildSession(tid, S.settings.level, variantFor(tid), mode);
@@ -1417,20 +1423,17 @@ document.addEventListener('click', e => {
     case 'drinksheet': drinkSheet(); break;
     case 'nic': { const k = a.dataset.k; S.settings.nicLast = k; addLog('nic', {ts:Date.now(), k}, `${NIC[k]} at ${hm(Date.now())} · ${onDay('nic',lday(Date.now())).length+1} today`); break; }
     case 'nicsheet': nicSheet(); break;
-    case 'mv': { const col = a.dataset.col; if(!['drinks','nic','good'].includes(col)) break; const x = S[col].find(e=>String(e.ts)===a.dataset.ts); if(x){ x.ts = Math.min(Date.now(), x.ts + a.dataset.d*6e4); save(); render(); RESHEET && RESHEET(); } break; }
-    case 'del': { const col = a.dataset.col; if(!['drinks','nic','good'].includes(col)) break; S[col] = S[col].filter(e=>String(e.ts)!==a.dataset.ts); save(); render(); RESHEET && RESHEET(); break; }
+    case 'del': { const col = a.dataset.col; if(!['meals','drinks','nic','good'].includes(col)) break; S[col] = S[col].filter(e=>e.uid!==a.dataset.uid); save(); render(); (col==='meals' ? mealSheet : RESHEET)?.(); break; }
     case 'nap': { const k = a.dataset.k, v = +a.dataset.v; S.naps = S.naps.filter(n=>n.date!==k); if(v) S.naps.push({date:k, min:v}); save(); render(); sleepSheet(); break; }
     case 'showtog': S.settings.show[a.dataset.id] = !shown(a.dataset.id); save(); render(); break;
     case 'meal': track('meal', +a.dataset.v || 1); break;
-    case 'mealsz': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ m.sz = +a.dataset.v; save(); render(); mealSheet(); } break; }
+    case 'mealsz': { const m = S.meals.find(x=>x.uid===a.dataset.uid); if(m){ m.sz = +a.dataset.v; save(); render(); mealSheet(); } break; }
     case 'fsnack': track('fsnack'); break;
     case 'undo2': if(UNDO){ UNDO(); UNDO = null; save(); render(); toast('Undone'); } break;
     case 'watersheet': waterSheet(); break;
     case 'waterset': S.settings[a.dataset.k] = +a.dataset.v; save(); render(); waterSheet(); break;
     case 'mealsheet': mealSheet(); break;
-    case 'mealmv': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ const nt = Math.min(Date.now(), m.ts + a.dataset.d*6e4); m.ts = nt; save(); render(); mealSheet(); } break; }
-    case 'mealdel': S.meals = S.meals.filter(x=>String(x.ts)!==a.dataset.ts); save(); render(); mealSheet(); break;
-    case 'mealpast': S.meals.push({...(a.dataset.k?{k:a.dataset.k}:{sz:1}), ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
+    case 'mealpast': S.meals.push({...(a.dataset.k?{k:a.dataset.k}:{sz:1}), uid:newUid(), ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
     case 'sleepsheet': sleepSheet(); break;
     case 'sleepdel': S.sleep = S.sleep.filter(x=>!(x.wake && dkey(new Date(x.wake))===a.dataset.k)); delete SLDRAFT[a.dataset.k]; save(); render(); sleepSheet(); break;
     case 'report': reportSheet(+a.dataset.n || 2); break;
@@ -1465,13 +1468,22 @@ document.addEventListener('change', e => {
   const a = e.target.closest('[data-act]'); if(!a) return;
   if(a.dataset.act==='set'){ S.settings[a.dataset.k] = a.checked; save(); }
   if(a.dataset.act==='import' && a.files[0]) importData(a.files[0]);
+  if(a.dataset.act==='logtime'){
+    const col = a.dataset.col, x = ['meals','drinks','nic','good'].includes(col) && S[col].find(e=>e.uid===a.dataset.uid), m = hhmm(a.value);
+    if(x && m!=null){
+      // keep it on the same tracker day: times before 4:00 are after midnight
+      const t = parseKey(lday(x.ts)).getTime() + (m < DAY_START_H*60 ? 864e5 : 0) + m*6e4;
+      x.ts = t; save(); DIRTY = true;
+    }
+  }
   if(a.dataset.act==='sleeptime'){
     const k = a.dataset.k, sl = sleepOn(k), dr = SLDRAFT[k] = SLDRAFT[k] || (sl ? {bed:hm(sl.bed), wake:hm(sl.wake)} : {});
     dr[a.dataset.f] = a.value;
     if(hhmm(dr.bed)!=null && hhmm(dr.wake)!=null){
       S.sleep = S.sleep.filter(x=>!(x.wake && dkey(new Date(x.wake))===k)); S.sleep.push(nightTs(k, dr.bed, dr.wake));
-      delete SLDRAFT[k]; S.settings.welcomed = true; save(); render(); sleepSheet();
-      const n = sleepOn(k); toast(`Saved · ${dur(n.wake-n.bed)}`);
+      delete SLDRAFT[k]; S.settings.welcomed = true; save(); DIRTY = true;
+      const n = sleepOn(k), st = a.closest('.night')?.querySelector('.nst');
+      if(st) st.innerHTML = `${dur(n.wake-n.bed)} saved <button class="link" data-act="sleepdel" data-k="${k}">clear</button>`;
     }
   }
   if(a.dataset.act==='snacktarget'){
