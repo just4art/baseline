@@ -107,13 +107,15 @@ button{cursor:pointer}
 .goalbar{height:8px;background:var(--surface2);border-radius:999px;overflow:hidden;margin-top:10px}
 .goalbar i{display:block;height:100%;background:var(--accent);border-radius:999px}
 
-/* habits */
-.habit{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:none;border:none;border-top:1px solid var(--line);padding:11px 0}
-.habit:first-of-type{border-top:none}
-.box{width:26px;height:26px;border-radius:8px;border:2px solid var(--line);display:grid;place-items:center;flex:none;font-weight:800;color:transparent}
-.habit.on .box{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.habit .hl{font-weight:600}
-.habit .hh{font-size:12.5px;color:var(--muted)}
+/* trackers */
+.snack .nm small.times{white-space:normal}
+.add.sm{min-width:46px;height:40px;font-size:14px}
+.add.wide{padding:0 12px}
+.step{display:flex;align-items:center;justify-content:space-between;gap:6px;border-top:1px solid var(--line);padding:10px 0}
+.step:first-of-type{border-top:none}
+.step .lb{font-weight:700;min-width:28px}
+.step .tm{font-family:"Barlow Condensed",sans-serif;font-size:24px;font-weight:700;min-width:62px;text-align:center}
+.step .ctl{display:flex;gap:6px;align-items:center}
 
 /* tip */
 .tip{border-left:4px solid var(--ball);background:var(--surface)}
@@ -447,12 +449,21 @@ const LEVELS = [null,
   {name:'Match fit', work:50,rest:10,rounds:3, cWork:45,cRest:15,cRounds:2, d:'50s on / 10s off'}
 ];
 
-const HABITS = [
-  {id:'protein',label:'Protein at every meal',hint:'eggs, skyr, cottage cheese, tofu, tempeh, lentils'},
-  {id:'steps',label:'8,000+ steps',hint:'a walk after lunch counts'},
-  {id:'kitchen',label:'Kitchen closed after dinner',hint:'tea is fine'},
-  {id:'water',label:'2 litres of water',hint:'a glass with every meal and one in between'}
-];
+/* water, meals, sleep: one tap each. A tracker "day" runs 04:00–04:00, so a 2 am meal belongs to the evening before. */
+const DAY_START_H = 4;
+const lday = ts => dkey(new Date(ts - DAY_START_H*3600e3));
+const hm = ts => { const d = new Date(ts); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+const dur = ms => { const m = Math.round(ms/6e4); return `${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`; };
+const litres = ml => `${+(ml/1000).toFixed(2)} L`;
+const waterOn = k => S.water.filter(w=>lday(w.ts)===k).reduce((a,w)=>a+w.ml,0);
+const mealsOn = k => S.meals.filter(m=>lday(m.ts)===k).sort((a,b)=>a.ts-b.ts);
+const sleepOn = k => S.sleep.filter(x=>x.wake && lday(x.wake)===k).sort((a,b)=>a.wake-b.wake).pop() || null;
+// an open night: bed tapped, no wake yet, and recent enough to still be tonight
+const openSleep = () => { const x = [...S.sleep].sort((a,b)=>(b.bed||b.wake)-(a.bed||a.wake))[0]; return x && x.bed && !x.wake && Date.now()-x.bed < 16*3600e3 ? x : null; };
+// minutes past an anchor hour, so averages work across midnight
+const minsFrom = (ts, h0) => { const d = new Date(ts); return ((d.getHours()-h0+24)%24)*60 + d.getMinutes(); };
+const fromMins = (m, h0) => { m = Math.round(m); const t = (m + h0*60) % 1440; return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0'); };
+const avg = a => a.reduce((x,y)=>x+y,0)/a.length;
 
 const ACTIVITIES = ['Tennis','Walk','Run','Bike','Swim','Padel','Gym','Other'];
 
@@ -490,17 +501,18 @@ const num = v => { const n = parseFloat(String(v).replace(',','.')); return isFi
 
 /* ================= storage ================= */
 const KEY = 'baseline.v1';
-const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[]});
+const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',waterGoal:2000,glass:250,reported:{},snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[],water:[],meals:[],sleep:[]});
 function load(){
   try{
     const raw = localStorage.getItem(KEY);
     if(raw){
       const d = JSON.parse(raw), def = DEFAULT(), obj = v => v && typeof v==='object' && !Array.isArray(v) ? v : {};
       const st = {...def.settings, ...(d.settings||{})};
-      st.snacks = obj(st.snacks); st.nudgeOff = obj(st.nudgeOff); st.bumped = obj(st.bumped);
+      st.snacks = obj(st.snacks); st.reported = obj(st.reported); st.nudgeOff = obj(st.nudgeOff); st.bumped = obj(st.bumped);
       return {...def, ...d, settings:st,
         sessions:Array.isArray(d.sessions)?d.sessions:[], habits:obj(d.habits), body:Array.isArray(d.body)?d.body:[],
-        snackLog:Array.isArray(d.snackLog)?d.snackLog:[], checkins:Array.isArray(d.checkins)?d.checkins:[]};
+        snackLog:Array.isArray(d.snackLog)?d.snackLog:[], checkins:Array.isArray(d.checkins)?d.checkins:[],
+        water:Array.isArray(d.water)?d.water:[], meals:Array.isArray(d.meals)?d.meals:[], sleep:Array.isArray(d.sleep)?d.sleep:[]};
     }
   }catch(e){}
   return DEFAULT();
@@ -634,17 +646,14 @@ const comebackGap = () => { const g = gapDays(); return g!=null && g>=3 ? g : 0;
 const curMode = () => (comebackGap() && S.settings.modeSetOn !== dkey()) ? 'mini' : S.settings.mode;
 function dayInfo(k){
   const ss = S.sessions.filter(s=>s.date===k);
-  const h = S.habits[k] || {};
-  const hc = HABITS.filter(x=>h[x.id]).length;
   const sn = snackTotals(k), snack = Object.values(sn).some(v=>v>0);
-  return {ss, g:ss.filter(s=>s.kind==='guided'), o:ss.filter(s=>s.kind==='other'), hc, sn, snack, active: ss.length>0 || snack};
+  return {ss, g:ss.filter(s=>s.kind==='guided'), o:ss.filter(s=>s.kind==='other'), sn, snack, active: ss.length>0 || snack};
 }
 function dayScore(k){
   const d = dayInfo(k);
   let s = 0;
-  if(d.g.length) s = 3; else if(d.o.length || (d.snack && snackPct(k)>=1)) s = 2; else if(d.snack || d.hc>=2) s = 1;
+  if(d.g.length) s = 3; else if(d.o.length || (d.snack && snackPct(k)>=1)) s = 2; else if(d.snack) s = 1;
   if(s>=1 && d.snack && d.g.length) s++;
-  if(s>=2 && d.hc>=3) s++;
   return Math.min(4, s);
 }
 function activeDaysInWeek(mon){
@@ -694,7 +703,7 @@ function renderToday(){
     h += `<div class="card"><h3>How it works</h3>
       <p><b>Snacks first.</b> Short sets during the day: do 10 squats, tap <b>+10</b>. Any snack makes it an active day. Switch between Home and Office for moves that fit where you are.</p>
       <p class="muted small">Got 8–25 minutes? The guided sessions further down are there, with a stick figure for every move. The app suggests small steps up once snacks are a habit, never more than one at a time.</p>
-      <p class="muted small">Once a week, a one-minute check-in builds a report you can share with a coach, a friend or an AI assistant to adjust the plan.</p>
+      <p class="muted small">Water, meals and sleep are one tap each. No food rules, just times, so patterns show up. Once a week the app builds a report you copy with one tap and paste into a chat with a coach or an AI assistant.</p>
       <div class="row" style="margin-top:8px"><button class="btn sm" data-act="welcomed">Got it</button></div></div>`;
   }
 
@@ -709,8 +718,9 @@ function renderToday(){
   }
 
   h += snacksCard(today);
+  h += trackCard();
   h += nudgeCard();
-  h += checkinCard();
+  h += reportCard();
 
   h += `<h3 style="margin:22px 0 0">Got more time?</h3>`;
   if(di.g.length){
@@ -745,14 +755,6 @@ function renderToday(){
     <div class="week">${cells}</div>
     <div class="goalbar"><i style="width:${Math.min(100,n/goal*100)}%"></i></div>
     <div class="row" style="margin-top:12px"><button class="btn sm" data-act="logother">+ Log activity (tennis, walk…)</button></div></div>`;
-
-  // habits
-  const hs = S.habits[today] || {};
-  h += `<div class="card"><div class="row between"><h3 style="margin:0">Daily habits</h3><span class="small muted">${HABITS.filter(x=>hs[x.id]).length} / ${HABITS.length}</span></div>`;
-  HABITS.forEach(x => {
-    h += `<button class="habit ${hs[x.id]?'on':''}" data-act="habit" data-h="${x.id}" aria-pressed="${!!hs[x.id]}"><span class="box">✓</span><span><span class="hl">${x.label}</span><br><span class="hh">${x.hint}</span></span></button>`;
-  });
-  h += `</div>`;
 
   // tip of the day
   const doy = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0))/864e5);
@@ -851,39 +853,94 @@ function nudgeCard(){
     <div class="row" style="margin-top:8px"><button class="btn pri sm" data-act="nudgego">${n.btn}</button><button class="btn sm ghost" data-act="nudgeoff">Not this week</button></div></div>`;
 }
 
-/* ---------- weekly check-in ---------- */
-function checkinDue(){
-  const now = new Date(), dow = now.getDay(), mon = mondayOf(now);
-  const has = wk => S.checkins.some(c=>c.week===wk);
-  if((dow===5 || dow===6 || dow===0) && !has(dkey(mon))) return dkey(mon);
-  if(dow===1 || dow===2){
-    const pm = addDays(mon,-7), pk = dkey(pm);
-    if(!has(pk) && activeDaysInWeek(pm) > 0) return pk;
+/* ---------- water, meals, sleep ---------- */
+function trackCard(){
+  const k = lday(Date.now()), ml = waterOn(k), goal = S.settings.waterGoal, gl = S.settings.glass;
+  const ms = mealsOn(k), op = openSleep(), sl = sleepOn(dkey());
+  const w = Math.min(100, ml/goal*100);
+  let h = `<div class="card"><h3 style="margin:0 0 2px">Water, meals, sleep</h3><p class="small muted" style="margin:0">One tap each. No rules yet, just data.</p>`;
+  h += `<div class="snack first" style="margin-top:6px"><div class="r">
+      <button class="nm" data-act="watersheet">Water<small>goal ${litres(goal)} · glass ${gl} ml</small></button>
+      <span class="cnt">${ml?litres(ml).replace(' L','<span> L</span>'):'0'}</span>
+      <button class="add" data-act="water" data-n="${gl}" aria-label="Add a glass, ${gl} ml">+${gl}</button><button class="add big" data-act="water" data-n="500" aria-label="Add 500 ml">+500</button>
+    </div><div class="sbar"><i class="${w>=100?'full':''}" style="width:${w}%"></i></div></div>`;
+  h += `<div class="snack"><div class="r">
+      <button class="nm" data-act="mealsheet">Meals<small class="times">${ms.length?ms.map(m=>hm(m.ts)).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
+      <span class="cnt">${ms.length}</span>
+      <button class="add big wide" data-act="meal">+ Meal</button>
+    </div></div>`;
+  const slTxt = op ? `in bed since ${hm(op.bed)}` : sl ? `${sl.bed?hm(sl.bed):'?'} → ${hm(sl.wake)}${sl.bed?' · <b>'+dur(sl.wake-sl.bed)+'</b>':''} · edit ›` : 'tap at bedtime and when you wake';
+  h += `<div class="snack"><div class="r">
+      <button class="nm" data-act="sleepsheet">Sleep<small class="times">${slTxt}</small></button>
+      ${op ? `<button class="add big wide" data-act="wake">☀️ Up</button>` : `<button class="add wide" data-act="wake" aria-label="Woke up">☀️ Up</button><button class="add big wide" data-act="bed">🌙 Bed</button>`}
+    </div></div>`;
+  return h + `</div>`;
+}
+let UNDO = null;
+function snap(key){ const before = JSON.stringify(S[key]); UNDO = () => { S[key] = JSON.parse(before); }; }
+function track(act, n){
+  const now = Date.now(); S.settings.welcomed = true;
+  if(act==='water'){ snap('water'); S.water.push({ts:now, ml:n}); const v = waterOn(lday(now)), g = S.settings.waterGoal;
+    save(); render(); undoToast(v>=g && v-n<g ? `Water goal hit · ${litres(v)} 💧` : `+${n} ml · ${litres(v)} today`); }
+  if(act==='meal'){ snap('meals'); S.meals.push({ts:now}); save(); render(); undoToast(`Meal at ${hm(now)} · ${mealsOn(lday(now)).length} today`); }
+  if(act==='bed'){ snap('sleep'); S.sleep.push({bed:now, wake:null}); save(); render(); undoToast(`Good night · ${hm(now)}`); }
+  if(act==='wake'){
+    snap('sleep'); const op = openSleep();
+    if(op){ op.wake = now; save(); render(); undoToast(`Slept ${dur(now-op.bed)} · ${hm(op.bed)} → ${hm(now)}`); }
+    else { S.sleep.push({bed:null, wake:now}); save(); render(); sleepSheet(); }
   }
+}
+function undoToast(msg){
+  const t = $('#toast'); t.classList.add('act');
+  t.innerHTML = `<span>${esc(msg)}</span><button data-act="undo2">Undo</button>`;
+  t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(()=>{ t.classList.remove('on','act'); }, 4000);
+}
+const stepper = (lab, ts, act, attrs) => `<div class="step"><span class="lb">${lab}</span><span class="ctl">
+    <button class="add sm" data-act="${act}" ${attrs} data-d="-60">−1h</button><button class="add sm" data-act="${act}" ${attrs} data-d="-15">−15</button>
+    <span class="tm">${ts?hm(ts):'—'}</span>
+    <button class="add sm" data-act="${act}" ${attrs} data-d="15">+15</button><button class="add sm" data-act="${act}" ${attrs} data-d="60">+1h</button></span></div>`;
+function mealSheet(){
+  const k = lday(Date.now()), ms = mealsOn(k);
+  openSheet(`<div class="row between"><h2>Meals today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Forgot to tap? Add one and nudge the time. The day runs until ${DAY_START_H}:00, so a late-night meal stays with this evening.</p>
+    ${ms.length ? ms.map((m,i)=>stepper(`#${i+1}`, m.ts, 'mealmv', `data-ts="${m.ts}"`).replace('</span></div>',`<button class="ib" data-act="mealdel" data-ts="${m.ts}" aria-label="Delete">✕</button></span></div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
+    <div class="row" style="margin-top:10px"><button class="btn sm" data-act="mealpast">+ Meal I forgot (1 h ago)</button></div>`);
+}
+function sleepSheet(){
+  const op = openSleep(), x = op || [...S.sleep].filter(e=>e.wake).sort((a,b)=>b.wake-a.wake)[0];
+  if(!x){ openSheet(`<div class="row between"><h2>Sleep</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div><p>Tap <b>🌙 Bed</b> when you go to sleep and <b>☀️</b> when you wake up.</p>`); return; }
+  const id = `data-id="${S.sleep.indexOf(x)}"`;
+  openSheet(`<div class="row between"><h2>${op?'Tonight':'Last sleep'}</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Tapped late or forgot? Nudge the times.${x.bed&&x.wake?` Total: <b>${dur(x.wake-x.bed)}</b>`:''}</p>
+    ${x.bed ? stepper('Asleep', x.bed, 'sleepmv', id+' data-f="bed"') : `<div class="step"><span class="lb">Asleep</span><button class="btn sm" data-act="sleepset" ${id}>Set (7 h before waking)</button></div>`}
+    ${x.wake ? stepper('Awake', x.wake, 'sleepmv', id+' data-f="wake"') : ''}
+    <div class="row" style="margin-top:10px"><button class="btn sm danger" data-act="sleepdel" ${id}>Delete this night</button></div>`);
+}
+function waterSheet(){
+  const st = S.settings, k = lday(Date.now());
+  openSheet(`<div class="row between"><h2>Water</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Today: <b>${litres(waterOn(k))}</b>. Tea and coffee count too.</p>
+    <p class="small" style="font-weight:700;margin-bottom:4px">Daily goal</p><div class="row">${[1500,2000,2500,3000].map(v=>`<button class="tog ${v===st.waterGoal?'on':''}" data-act="waterset" data-k="waterGoal" data-v="${v}">${litres(v)}</button>`).join('')}</div>
+    <p class="small" style="font-weight:700;margin-bottom:4px">Your glass</p><div class="row">${[200,250,330,400].map(v=>`<button class="tog ${v===st.glass?'on':''}" data-act="waterset" data-k="glass" data-v="${v}">${v} ml</button>`).join('')}</div>`);
+}
+
+/* ---------- weekly report, one tap ---------- */
+function reportDue(){
+  const now = new Date(), dow = now.getDay(), mon = mondayOf(now), done = S.settings.reported;
+  if((dow===5 || dow===6 || dow===0) && !done[dkey(mon)]) return dkey(mon);
+  if(dow===1 || dow===2){ const pk = dkey(addDays(mon,-7)); if(!done[pk] && activeDaysInWeek(addDays(mon,-7)) > 0) return pk; }
   return null;
 }
-function checkinCard(){
-  const wk = checkinDue(); if(!wk) return '';
-  const thisWeek = wk === dkey(mondayOf(new Date()));
-  return `<div class="card nudge"><h3>Weekly check-in · 1 minute</h3>
-    <p>${thisWeek?'How did this week go?':'Last week’s check-in is still open.'} Energy, sleep, waist, and what got in the way. It goes into your report.</p>
-    <div class="row" style="margin-top:8px"><button class="btn pri sm" data-act="checkin" data-w="${wk}">Check in</button></div></div>`;
+function reportCard(){
+  const wk = reportDue(); if(!wk) return '';
+  return `<div class="card nudge"><h3>Weekly report is ready</h3>
+    <p>One tap copies it. Paste it into a chat with your coach or AI assistant: you’ll get a few quick questions and one change for next week.</p>
+    <div class="row" style="margin-top:8px"><button class="btn pri sm" data-act="copyweek" data-w="${wk}">Copy report</button><button class="btn sm ghost" data-act="report" data-n="2">View</button><button class="btn sm ghost" data-act="repskip" data-w="${wk}">Skip</button></div></div>`;
 }
-function checkinSheet(wk){
-  wk = wk || checkinDue() || dkey(mondayOf(new Date()));
-  const c = S.checkins.find(x=>x.week===wk) || {};
-  const sc = (name, n, from, val) => `<div class="scale ${n>5?'w8':''}">${[...Array(n)].map((_,i)=>{const v=i+from;return `<label><input type="radio" name="${name}" value="${v}" ${val===v?'checked':''}><span>${v}</span></label>`;}).join('')}</div>`;
-  openSheet(`<div class="row between"><h2>Week of ${fmtDate(wk)}</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <form data-form="checkin" data-w="${wk}" style="margin-top:10px">
-      <label class="small" style="font-weight:700">Energy <span class="muted" style="font-weight:400">1 = drained, 5 = great</span></label>${sc('energy',5,1,c.energy)}
-      <label class="small" style="font-weight:700">Sleep <span class="muted" style="font-weight:400">1 = bad, 5 = great</span></label>${sc('sleep',5,1,c.sleep)}
-      <label class="small" style="font-weight:700">Bloated or heavy days</label>${sc('bloat',8,0,c.bloat)}
-      <div class="row"><div class="field"><label for="cw">Waist (cm)</label><input id="cw" name="waist" inputmode="decimal" placeholder="optional"></div>
-      <div class="field"><label for="ck">Weight (kg)</label><input id="ck" name="weight" inputmode="decimal" placeholder="optional"></div></div>
-      <div class="field" style="margin-top:10px"><label for="cn">What helped, what got in the way?</label><textarea id="cn" name="note" rows="3" maxlength="600">${esc(c.note||'')}</textarea></div>
-      <div class="field" style="margin-top:10px"><label for="ca">Anything to change in the app?</label><textarea id="ca" name="app" rows="2" maxlength="600">${esc(c.app||'')}</textarea></div>
-      <div style="margin-top:14px"><button class="btn big pri" type="submit">Save check-in</button></div>
-    </form>`);
+async function copyWeek(wk){
+  const txt = reportText(2);
+  try{ await navigator.clipboard.writeText(txt); S.settings.reported[wk || reportDue() || dkey(mondayOf(new Date()))] = Date.now(); save(); render(); toast('Copied. Paste it into the chat'); }
+  catch(e){ reportSheet(2); }
 }
 
 /* ---------- report to share ---------- */
@@ -907,37 +964,53 @@ function reportText(weeks){
       if(sid.length) parts.push(sid.map(id=>`${SN[id].n.toLowerCase()} ${fmtAmt(SN[id],t[id])}`).join(', '));
       d.g.forEach(g => parts.push(`WORKOUT ${TPL[g.tpl].name} L${g.level} ${MODES[sessMode(g)].toLowerCase()} ${mins(g.secs)}min${g.frac<0.98?` ${Math.round(g.frac*100)}% done`:''}${g.rating?` rated ${({easy:'too easy',right:'just right',hard:'too hard'})[g.rating]}`:''}${g.note?` note: "${g.note}"`:''}`));
       d.o.forEach(o => parts.push(`${o.act} ${o.secs/60|0}min`));
-      const hb = HABITS.filter(x=>(S.habits[k]||{})[x.id]).map(x=>x.id);
-      if(hb.length) parts.push(`habits: ${hb.join(', ')}`);
+      const ml = waterOn(k); if(ml) parts.push(`water ${litres(ml)}`);
+      const ms = mealsOn(k); if(ms.length) parts.push(`meals ${ms.map(m=>hm(m.ts)).join(' ')}`);
+      const sl = sleepOn(k); if(sl) parts.push(`sleep ${sl.bed?hm(sl.bed):'?'}→${hm(sl.wake)}${sl.bed?` (${dur(sl.wake-sl.bed)})`:''}`);
       const hrs = S.snackLog.filter(e=>e.date===k && e.n>0).map(e=>new Date(e.ts).getHours());
       if(hrs.length) parts.push(`snack times: ${[...new Set(hrs)].sort((a,b)=>a-b).map(x=>x+'h').join(' ')}`);
       L.push(`  ${DOW[(parseKey(k).getDay()+6)%7]} ${fmtDate(k)}: ${parts.join(' | ') || '—'}`);
     });
+    const tr = trackSummary(days); if(tr) L.push(tr);
     const c = S.checkins.find(x=>x.week===wk);
     if(c){
       L.push(`Check-in: energy ${c.energy??'?'}/5, sleep ${c.sleep??'?'}/5, bloated days ${c.bloat??'?'}`);
       if(c.note) L.push(`  Notes: ${c.note}`);
       if(c.app) L.push(`  App feedback: ${c.app}`);
-    } else L.push('Check-in: not done');
+    }
     const b = S.body.filter(x=>x.date>=wk && x.date<=dkey(addDays(mon,6)));
     b.forEach(x => L.push(`Body ${fmtDate(x.date)}: ${x.waist!=null?`waist ${x.waist} cm `:''}${x.weight!=null?`weight ${x.weight} kg`:''}`.trim()));
   }
   const ws = S.body.filter(b=>b.waist!=null).sort((a,b)=>a.date<b.date?-1:1);
   if(ws.length>1) L.push('', `Waist trend: ${ws[0].waist} cm (${fmtDate(ws[0].date)}) → ${ws[ws.length-1].waist} cm (${fmtDate(ws[ws.length-1].date)})`);
-  L.push('', 'Please look at this week: what is working, what to adjust (targets, timing, food), and the one change for next week.');
+  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so meals after midnight belong to the evening before. Sleep is listed on the day you woke up.`,
+    'Please review this. First ask me 3-5 quick questions I can answer in a word or two (energy, hunger, what got in the way, anything to change in the app). Then tell me what is working and the one change for next week.');
   return L.join('\n');
+}
+function trackSummary(days){
+  const out = [];
+  const w = days.map(waterOn).filter(Boolean);
+  if(w.length) out.push(`water avg ${litres(Math.round(avg(w)/50)*50)} on ${w.length} logged day${w.length>1?'s':''}, goal hit ${w.filter(v=>v>=S.settings.waterGoal).length}d`);
+  const md = days.map(mealsOn).filter(a=>a.length);
+  if(md.length){
+    const late = md.filter(a=>minsFrom(a[a.length-1].ts, DAY_START_H) >= (23-DAY_START_H)*60).length;
+    out.push(`meals avg ${avg(md.map(a=>a.length)).toFixed(1)}/day on ${md.length} logged day${md.length>1?'s':''}, first ~${fromMins(avg(md.map(a=>minsFrom(a[0].ts,DAY_START_H))),DAY_START_H)}, last ~${fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H)}, last meal after 23:00 on ${late}d`);
+  }
+  const sl = days.map(sleepOn).filter(x=>x && x.bed);
+  if(sl.length) out.push(`sleep avg ${dur(avg(sl.map(x=>x.wake-x.bed)))} over ${sl.length} night${sl.length>1?'s':''}, asleep ~${fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18)}, up ~${fromMins(avg(sl.map(x=>minsFrom(x.wake,0))),0)}`);
+  return out.length ? 'Tracking: ' + out.join('; ') : '';
 }
 function reportSheet(weeks=2){
   const txt = reportText(weeks);
   openSheet(`<div class="row between"><h2>Weekly report</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">Plain text. Paste it into a chat with a coach, a friend or an AI assistant and ask what to change. Nothing leaves the phone unless you send it.</p>
+    <p class="small muted">Plain text. Paste it into a chat with a coach or an AI assistant. Nothing leaves the phone unless you send it.</p>
     <div class="row" style="margin:8px 0">${[1,2,4].map(n=>`<button class="tog ${n===weeks?'on':''}" data-act="report" data-n="${n}">${n} week${n>1?'s':''}</button>`).join('')}</div>
     <textarea class="rep" id="repTxt" readonly>${esc(txt)}</textarea>
     <div class="row" style="margin-top:10px"><button class="btn pri" data-act="copyrep">Copy</button>${navigator.share?'<button class="btn" data-act="sharerep">Share…</button>':''}</div>`);
 }
 async function copyReport(){
   const ta = $('#repTxt'); if(!ta) return;
-  try{ await navigator.clipboard.writeText(ta.value); toast('Report copied'); }
+  try{ await navigator.clipboard.writeText(ta.value); S.settings.reported[reportDue() || dkey(mondayOf(new Date()))] = Date.now(); save(); render(); toast('Report copied'); }
   catch(e){ ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length); try{ document.execCommand('copy'); toast('Report copied'); }catch(_){ toast('Select all and copy'); } }
 }
 
@@ -977,14 +1050,21 @@ function renderProgress(){
     const a = sum(mon), b = sum(addDays(mon,-7)), ids = SNACKS.map(s=>s.id).filter(id=>a[id]||b[id]||snackCfg(id).home||snackCfg(id).office);
     h += `<div class="card"><h3>Snacks</h3><table class="mini"><thead><tr><th>Move</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
       ${ids.map(id=>`<tr><td>${SN[id].n}</td><td class="num"><b>${fmtAmt(SN[id],a[id]||0)}</b></td><td class="num muted">${fmtAmt(SN[id],b[id]||0)}</td></tr>`).join('')}</tbody></table>
-      <div class="row" style="margin-top:12px"><button class="btn sm pri" data-act="checkin">Weekly check-in</button><button class="btn sm" data-act="report" data-n="2">Report to share</button></div></div>`;
+      <div class="row" style="margin-top:12px"><button class="btn sm pri" data-act="copyweek">Copy report</button><button class="btn sm" data-act="report" data-n="2">View report</button></div></div>`;
+    const wk = m => [...Array(7)].map((_,i)=>dkey(addDays(m,i))).filter(k=>k<=dkey());
+    const stat = ks => {
+      const w = ks.map(waterOn).filter(Boolean), md = ks.map(mealsOn).filter(a=>a.length), sl = ks.map(sleepOn).filter(x=>x&&x.bed);
+      return {w: w.length?litres(Math.round(avg(w)/50)*50):'—', m: md.length?avg(md.map(a=>a.length)).toFixed(1):'—',
+        lm: md.length?fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H):'—',
+        s: sl.length?dur(avg(sl.map(x=>x.wake-x.bed))):'—', b: sl.length?fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18):'—'};
+    };
+    if(S.water.length || S.meals.length || S.sleep.length){
+      const A = stat(wk(mon)), B = stat(wk(addDays(mon,-7)));
+      const row = (l,f) => `<tr><td>${l}</td><td class="num"><b>${A[f]}</b></td><td class="num muted">${B[f]}</td></tr>`;
+      h += `<div class="card"><h3>Water, meals, sleep</h3><table class="mini"><thead><tr><th>Average</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
+        ${row('Water / day','w')}${row('Meals / day','m')}${row('Last meal','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
+    }
   }
-  if(S.checkins.length){
-    const cs = [...S.checkins].sort((x,y)=>x.week<y.week?1:-1).slice(0,8);
-    h += `<div class="card"><h3>Check-ins</h3><table class="mini"><thead><tr><th>Week</th><th class="num">Energy</th><th class="num">Sleep</th><th class="num">Bloated</th></tr></thead><tbody>
-      ${cs.map(c=>`<tr><td><button class="link" data-act="checkin" data-w="${c.week}">${fmtDate(c.week)}</button></td><td class="num">${c.energy??'—'}</td><td class="num">${c.sleep??'—'}</td><td class="num">${c.bloat!=null?c.bloat+'d':'—'}</td></tr>`).join('')}</tbody></table></div>`;
-  }
-
   // heatmap: 12 weeks, columns=weeks
   const today = new Date(), tk = dkey(today), mon0 = addDays(mondayOf(today), -77);
   let cells = `<span></span>`;
@@ -1001,13 +1081,15 @@ function renderProgress(){
       const di = dayInfo(k), sc = dayScore(k);
       const parts = di.ss.map(s=>s.kind==='guided'?`${TPL[s.tpl].name} (${mins(s.secs)} min)`:`${s.act} (${s.secs/60|0} min)`);
       if(di.snack) parts.push(`snacks ${Math.round(snackPct(k)*100)}%`);
-      const tipTxt = `${fmtDate(k)}: ${parts.length?parts.join(', '):'no workout'} · habits ${di.hc}/${HABITS.length}`;
+      const wml = waterOn(k), slp = sleepOn(k);
+      if(wml) parts.push(`water ${litres(wml)}`); if(slp && slp.bed) parts.push(`slept ${dur(slp.wake-slp.bed)}`);
+      const tipTxt = `${fmtDate(k)}: ${parts.length?parts.join(', '):'nothing logged'}`;
       cells += `<span class="c l${sc} ${k===tk?'td':''}" data-tip="${esc(tipTxt)}"></span>`;
     }
   }
   h += `<div class="card"><h3>Last 12 weeks</h3><div class="heat">${cells}</div>
     <div class="legend">less <i style="background:var(--h0)"></i><i style="background:var(--h1)"></i><i style="background:var(--h2)"></i><i style="background:var(--h3)"></i><i style="background:var(--h4)"></i> more</div>
-    <p class="tiny muted" style="margin:6px 0 0">Snacks, activities and workouts all count. Darkest = workout plus snacks or 3+ habits.</p></div>`;
+    <p class="tiny muted" style="margin:6px 0 0">Snacks, activities and workouts all count. Darkest = workout plus snacks.</p></div>`;
 
   // body
   const wt = S.body.filter(b=>b.weight!=null).sort((a,b)=>a.date<b.date?-1:1);
@@ -1058,7 +1140,7 @@ function renderSettings(){
   [3,4,5,6].forEach(g => h += `<button class="lvl ${g===st.goal?'on':''}" data-act="goal" data-g="${g}"><b>${g}</b><span>days</span></button>`);
   h += `</div><p class="small muted" style="margin-top:10px">Days with snacks, a workout or a logged activity all count. Five is a good target.</p></div>`;
   h += `<div class="card"><h3>Your data</h3>
-    <p class="small muted" style="margin-top:0">Everything lives on this device only (${S.sessions.length} sessions, ${S.snackLog.length} snack sets, ${S.body.length} body check-ins). No account, nothing is uploaded. Export a backup once a month — and before switching phones.</p>
+    <p class="small muted" style="margin-top:0">Everything lives on this device only (${S.sessions.length} sessions, ${S.snackLog.length} snack sets, ${S.water.length+S.meals.length+S.sleep.length} water/meal/sleep taps, ${S.body.length} body check-ins). No account, nothing is uploaded. Export a backup once a month — and before switching phones.</p>
     <div class="row"><button class="btn sm" data-act="export">Export backup</button><label class="btn sm" style="cursor:pointer">Import backup<input type="file" accept="application/json,.json" data-act="import" hidden></label><button class="btn sm danger" data-act="reset">Erase everything</button></div></div>`;
   h += `<div class="card"><h3>Theme</h3><div class="row">${['auto','light','dark'].map(m=>`<button class="btn sm ${(st.theme||'auto')===m?'pri':''}" data-act="theme" data-m="${m}">${m[0].toUpperCase()+m.slice(1)}</button>`).join('')}</div></div>`;
   h += `<p class="tiny muted" style="text-align:center">Listen to your body: sharp pain means stop. Anything chest-related or dizzy, see a doctor before pushing on.</p>`;
@@ -1127,6 +1209,7 @@ function openSheet(html){
   s.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
   s.addEventListener('click', e => { if(e.target === s) closeSheet(); });
   document.body.appendChild(s);
+  $('#toast')?.classList.remove('on','act');
   s.querySelector('button, input, select')?.focus();
 }
 function closeSheet(){ $('#scrim')?.remove(); }
@@ -1190,17 +1273,31 @@ document.addEventListener('click', e => {
       break;
     }
     case 'nudgeoff': { const n = nudge(); if(n){ S.settings.nudgeOff[n.key] = 1; save(); render(); } break; }
-    case 'checkin': checkinSheet(a.dataset.w); break;
+    case 'copyweek': copyWeek(a.dataset.w); break;
+    case 'repskip': S.settings.reported[a.dataset.w] = 'skip'; save(); render(); break;
+    case 'water': track('water', +a.dataset.n); break;
+    case 'meal': track('meal'); break;
+    case 'bed': track('bed'); break;
+    case 'wake': track('wake'); break;
+    case 'undo2': if(UNDO){ UNDO(); UNDO = null; save(); render(); toast('Undone'); } break;
+    case 'watersheet': waterSheet(); break;
+    case 'waterset': S.settings[a.dataset.k] = +a.dataset.v; save(); render(); waterSheet(); break;
+    case 'mealsheet': mealSheet(); break;
+    case 'mealmv': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ const nt = Math.min(Date.now(), m.ts + a.dataset.d*6e4); m.ts = nt; save(); render(); mealSheet(); } break; }
+    case 'mealdel': S.meals = S.meals.filter(x=>String(x.ts)!==a.dataset.ts); save(); render(); mealSheet(); break;
+    case 'mealpast': S.meals.push({ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
+    case 'sleepsheet': sleepSheet(); break;
+    case 'sleepmv': { const x = S.sleep[+a.dataset.id]; if(x){ const f = a.dataset.f, v = Math.min(Date.now(), x[f] + a.dataset.d*6e4);
+      if(f==='bed' && x.wake && v >= x.wake - 15*6e4) break; if(f==='wake' && x.bed && v <= x.bed + 15*6e4) break;
+      x[f] = v; save(); render(); sleepSheet(); } break; }
+    case 'sleepset': { const x = S.sleep[+a.dataset.id]; if(x && x.wake){ x.bed = x.wake - 7*3600e3; save(); render(); sleepSheet(); } break; }
+    case 'sleepdel': S.sleep.splice(+a.dataset.id, 1); save(); render(); closeSheet(); toast('Deleted'); break;
     case 'report': reportSheet(+a.dataset.n || 2); break;
     case 'copyrep': copyReport(); break;
     case 'sharerep': navigator.share({title:'Baseline report', text:$('#repTxt').value}).catch(()=>{}); break;
     case 'snackplace': {
       const id = a.dataset.id, pl = a.dataset.p, c = snackCfg(id);
       S.settings.snacks[id] = {...(S.settings.snacks[id]||{}), [pl]: !c[pl]}; save(); render(); break;
-    }
-    case 'habit': {
-      const k = dkey(); const h = S.habits[k] = S.habits[k] || {};
-      h[a.dataset.h] = !h[a.dataset.h]; save(); render(); break;
     }
     case 'logother': logOtherSheet(); break;
     case 'level': {
@@ -1215,7 +1312,7 @@ document.addEventListener('click', e => {
     case 'delbody': if(confirm('Delete this check-in?')){ S.body = S.body.filter(b=>b.date!==a.dataset.d); save(); render(); } break;
     case 'delsess': if(confirm('Delete this session?')){ S.sessions = S.sessions.filter(s=>String(s.ts)!==a.dataset.ts); save(); render(); } break;
     case 'export': exportData(); break;
-    case 'reset': if(confirm('Erase all workouts, habits and check-ins? This can’t be undone.') && confirm('Really erase everything?')){ S = DEFAULT(); save(); applyTheme(); render(); toast('All data erased'); } break;
+    case 'reset': if(confirm('Erase all workouts, snacks and logs? This can’t be undone.') && confirm('Really erase everything?')){ S = DEFAULT(); save(); applyTheme(); render(); toast('All data erased'); } break;
   }
 });
 document.addEventListener('toggle', e => {
@@ -1250,18 +1347,6 @@ document.addEventListener('submit', e => {
     const n = Math.round(num(fd.get('n')) || 0);
     if(!n || Math.abs(n) > 5000){ toast('Enter a number, e.g. 15 or -5'); return; }
     closeSheet(); logSnack(f.dataset.id, n); return;
-  }
-  if(f.dataset.form==='checkin'){
-    const g = k => { const v = fd.get(k); return v==null ? null : +v; };
-    const wk = f.dataset.w, waist = num(fd.get('waist')), weight = num(fd.get('weight'));
-    if((waist!=null && (waist<40 || waist>200)) || (weight!=null && (weight<30 || weight>300))){ toast('That number looks off — cm and kg please'); return; }
-    const c = {week:wk, ts:Date.now(), energy:g('energy'), sleep:g('sleep'), bloat:g('bloat'), note:String(fd.get('note')||'').trim(), app:String(fd.get('app')||'').trim()};
-    S.checkins = S.checkins.filter(x=>x.week!==wk); S.checkins.push(c);
-    if(waist!=null || weight!=null){
-      const date = dkey(), ex = S.body.find(b=>b.date===date);
-      if(ex){ if(waist!=null) ex.waist = waist; if(weight!=null) ex.weight = weight; } else S.body.push({date, waist, weight});
-    }
-    save(); render(); reportSheet(wk===dkey(mondayOf(new Date())) ? 1 : 2); toast('Check-in saved'); return;
   }
   if(f.dataset.form==='other'){
     const m = Math.round(num(fd.get('min')) || 0);
@@ -1772,8 +1857,8 @@ render();
 if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
 // keep "today" right when the app is reopened on a new day
-let lastDay = dkey();
-document.addEventListener('visibilitychange', () => { if(!document.hidden && dkey()!==lastDay && !(P && !P.finished)){ lastDay = dkey(); render(); } });
+let lastDay = dkey()+lday(Date.now());
+document.addEventListener('visibilitychange', () => { const d = dkey()+lday(Date.now()); if(!document.hidden && d!==lastDay && !(P && !P.finished)){ lastDay = d; render(); } });
 </script>
 </body>
 </html>
