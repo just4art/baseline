@@ -117,6 +117,12 @@ button{cursor:pointer}
 .step .tm{font-family:"Barlow Condensed",sans-serif;font-size:24px;font-weight:700;min-width:62px;text-align:center}
 .step .ctl{display:flex;gap:6px;align-items:center}
 .night{border-top:1px solid var(--line);padding:12px 0}
+.szgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.szb{border:1.5px solid var(--accent);background:var(--surface);color:var(--text);border-radius:14px;padding:16px 10px;text-align:center;touch-action:manipulation}
+.szb b{display:block;font-family:"Barlow Condensed",sans-serif;font-size:26px;color:var(--accent)}
+.szb span{font-size:13px;color:var(--muted)}
+.szb:active{transform:scale(.96)}
+.szrow{gap:6px;margin:-4px 0 8px 34px}
 .night:first-of-type{border-top:none}
 .night .row{margin-top:6px}
 .tl{flex:1;display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--muted);font-weight:600}
@@ -464,6 +470,12 @@ const waterOn = k => S.water.filter(w=>lday(w.ts)===k).reduce((a,w)=>a+w.ml,0);
 const foodOn = k => S.meals.filter(m=>lday(m.ts)===k).sort((a,b)=>a.ts-b.ts);
 const mealsOn = k => foodOn(k).filter(m=>m.k!=='snack');
 const fsnOn = k => foodOn(k).filter(m=>m.k==='snack');
+// meal size in portions: light ½, normal 1, big ×2, huge ×3
+const SIZES = [{v:0.5,n:'Light',d:'a few bites to half'},{v:1,n:'Normal',d:'one plate'},{v:2,n:'Big',d:'about two'},{v:3,n:'Huge',d:'three or more'}];
+const msz = m => m.sz || 1;
+const szTag = m => ({0.5:'½',2:'×2',3:'×3'})[msz(m)] || '';
+const portionsOn = k => mealsOn(k).reduce((a,m)=>a+msz(m),0);
+const fmtP = v => String(+v.toFixed(1)).replace('.5','½').replace(/^0½/,'½');
 // a night belongs to the calendar day you woke up
 const sleepOn = k => S.sleep.filter(x=>x.wake && x.bed && dkey(new Date(x.wake))===k).sort((a,b)=>a.wake-b.wake).pop() || null;
 const hhmm = s => { const m = /^(\d{1,2}):(\d{2})/.exec(s||''); return m ? (+m[1])*60 + (+m[2]) : null; };
@@ -879,8 +891,8 @@ function trackCard(){
       <button class="add" data-act="water" data-n="${gl}" aria-label="Add a glass, ${gl} ml">+${gl}</button><button class="add big" data-act="water" data-n="500" aria-label="Add 500 ml">+500</button>
     </div><div class="sbar"><i class="${w>=100?'full':''}" style="width:${w}%"></i></div></div>`;
   h += `<div class="snack"><div class="r">
-      <button class="nm" data-act="mealsheet">Food<small class="times">${fd.length?fd.map(m=>(m.k==='snack'?'🍪':'')+hm(m.ts)).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
-      <button class="add wide" data-act="fsnack">+ Snack</button><button class="add big wide" data-act="meal">+ Meal</button>
+      <button class="nm" data-act="mealsheet">Food<small class="times">${fd.length?fd.map(m=>(m.k==='snack'?'🍪':'')+hm(m.ts)+(m.k==='snack'||!szTag(m)?'':' '+szTag(m))).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
+      <button class="add wide" data-act="fsnack">+ Snack</button><button class="add big wide" data-act="mealask">+ Meal</button>
     </div></div>`;
   const nights = nk.map(x=>{ const sl = sleepOn(x); return `${DAYN[parseKey(x).getDay()]} ${sl?'<b>'+dur(sl.wake-sl.bed)+'</b>':'—'}`; }).join(' · ');
   h += `<div class="snack"><div class="r">
@@ -895,7 +907,7 @@ function track(act, n){
   const now = Date.now(); S.settings.welcomed = true;
   if(act==='water'){ snap('water'); S.water.push({ts:now, ml:n}); const v = waterOn(lday(now)), g = S.settings.waterGoal;
     save(); render(); undoToast(v>=g && v-n<g ? `Water goal hit · ${litres(v)} 💧` : `+${n} ml · ${litres(v)} today`); }
-  if(act==='meal'){ snap('meals'); S.meals.push({ts:now}); save(); render(); undoToast(`Meal at ${hm(now)} · ${mealsOn(lday(now)).length} today`); }
+  if(act==='meal'){ snap('meals'); S.meals.push({ts:now, sz:n||1}); closeSheet(); save(); render(); undoToast(`${SIZES.find(x=>x.v===(n||1)).n} meal at ${hm(now)} · ${fmtP(portionsOn(lday(now)))} portion${portionsOn(lday(now))===1?'':'s'} today`); }
   if(act==='fsnack'){ snap('meals'); S.meals.push({ts:now, k:'snack'}); save(); render(); undoToast(`Snack at ${hm(now)}`); }
 }
 function undoToast(msg){
@@ -910,9 +922,15 @@ const stepper = (lab, ts, act, attrs) => `<div class="step"><span class="lb">${l
 function mealSheet(){
   const k = lday(Date.now()), ms = foodOn(k);
   openSheet(`<div class="row between"><h2>Food today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">🍽️ meal · 🍪 snack. Forgot to tap? Add one and nudge the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
-    ${ms.length ? ms.map(m=>stepper(m.k==='snack'?'🍪':'🍽️', m.ts, 'mealmv', `data-ts="${m.ts}"`).replace('</span></div>',`<button class="ib" data-act="mealdel" data-ts="${m.ts}" aria-label="Delete">✕</button></span></div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
+    <p class="small muted">🍽️ meal · 🍪 snack. Tap a size under a meal to fix it. Forgot to tap? Add one and nudge the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
+    ${ms.length ? ms.map(m=>stepper(m.k==='snack'?'🍪':'🍽️', m.ts, 'mealmv', `data-ts="${m.ts}"`).replace('</span></div>',`<button class="ib" data-act="mealdel" data-ts="${m.ts}" aria-label="Delete">✕</button></span></div>`)
+      + (m.k==='snack' ? '' : `<div class="row szrow">${SIZES.map(x=>`<button class="tog ${msz(m)===x.v?'on':''}" data-act="mealsz" data-ts="${m.ts}" data-v="${x.v}">${x.n}</button>`).join('')}</div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
     <div class="row" style="margin-top:10px"><button class="btn sm" data-act="mealpast">+ Meal I forgot</button><button class="btn sm" data-act="mealpast" data-k="snack">+ Snack I forgot</button></div>`);
+}
+function mealAsk(){
+  openSheet(`<div class="row between"><h2>How big?</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">Compared with a normal plate. A rough guess is fine.</p>
+    <div class="szgrid">${SIZES.map(x=>`<button class="szb" data-act="meal" data-v="${x.v}"><b>${x.n}</b><span>${x.d}</span></button>`).join('')}</div>`);
 }
 const SLDRAFT = {};
 function sleepSheet(){
@@ -975,7 +993,7 @@ function reportText(weeks){
       d.g.forEach(g => parts.push(`WORKOUT ${TPL[g.tpl].name} L${g.level} ${MODES[sessMode(g)].toLowerCase()} ${mins(g.secs)}min${g.frac<0.98?` ${Math.round(g.frac*100)}% done`:''}${g.rating?` rated ${({easy:'too easy',right:'just right',hard:'too hard'})[g.rating]}`:''}${g.note?` note: "${g.note}"`:''}`));
       d.o.forEach(o => parts.push(`${o.act} ${o.secs/60|0}min`));
       const ml = waterOn(k); if(ml) parts.push(`water ${litres(ml)}`);
-      const ms = mealsOn(k); if(ms.length) parts.push(`meals ${ms.map(m=>hm(m.ts)).join(' ')}`);
+      const ms = mealsOn(k); if(ms.length) parts.push(`meals ${ms.map(m=>hm(m.ts)+(szTag(m)?`(${szTag(m)})`:'')).join(' ')} = ${fmtP(portionsOn(k))} portions`);
       const fs = fsnOn(k); if(fs.length) parts.push(`food snacks ${fs.map(m=>hm(m.ts)).join(' ')}`);
       const sl = sleepOn(k); if(sl) parts.push(`sleep ${sl.bed?hm(sl.bed):'?'}→${hm(sl.wake)}${sl.bed?` (${dur(sl.wake-sl.bed)})`:''}`);
       const hrs = S.snackLog.filter(e=>e.date===k && e.n>0).map(e=>new Date(e.ts).getHours());
@@ -1009,6 +1027,8 @@ function trackSummary(days){
   }
   if(md.length){
     const late = md.filter(a=>minsFrom(a[a.length-1].ts, DAY_START_H) >= (23-DAY_START_H)*60).length;
+    const pk = days.filter(k=>mealsOn(k).length), bigs = md.flat().filter(m=>msz(m)>=2);
+    out.push(`portions avg ${fmtP(Math.round(avg(pk.map(portionsOn))*2)/2)}/day (light ½, big ×2, huge ×3), big or huge meals ${bigs.length} (${bigs.filter(m=>minsFrom(m.ts,DAY_START_H)>=(21-DAY_START_H)*60).length} after 21:00)`);
     out.push(`meals avg ${avg(md.map(a=>a.length)).toFixed(1)}/day on ${md.length} logged day${md.length>1?'s':''}, first ~${fromMins(avg(md.map(a=>minsFrom(a[0].ts,DAY_START_H))),DAY_START_H)}, last ~${fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H)}, last meal after 23:00 on ${late}d`);
   }
   const sl = days.map(sleepOn).filter(x=>x && x.bed);
@@ -1071,6 +1091,7 @@ function renderProgress(){
       const w = ks.map(waterOn).filter(Boolean), md = ks.map(foodOn).filter(a=>a.length), sl = ks.map(sleepOn).filter(x=>x&&x.bed);
       return {w: w.length?litres(Math.round(avg(w)/50)*50):'—', m: md.length?avg(md.map(a=>a.filter(m=>m.k!=='snack').length)).toFixed(1):'—',
         lm: md.length?fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H):'—',
+        p: md.length?fmtP(Math.round(avg(ks.filter(k=>mealsOn(k).length).map(portionsOn))*2)/2):'—',
         fs: md.length?avg(ks.filter(k=>foodOn(k).length).map(k=>fsnOn(k).length)).toFixed(1):'—',
         s: sl.length?dur(avg(sl.map(x=>x.wake-x.bed))):'—', b: sl.length?fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18):'—'};
     };
@@ -1078,7 +1099,7 @@ function renderProgress(){
       const A = stat(wk(mon)), B = stat(wk(addDays(mon,-7)));
       const row = (l,f) => `<tr><td>${l}</td><td class="num"><b>${A[f]}</b></td><td class="num muted">${B[f]}</td></tr>`;
       h += `<div class="card"><h3>Water, food, sleep</h3><table class="mini"><thead><tr><th>Average</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
-        ${row('Water / day','w')}${row('Meals / day','m')}${row('Snacks / day','fs')}${row('Last food','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
+        ${row('Water / day','w')}${row('Meals / day','m')}${row('Portions / day','p')}${row('Snacks / day','fs')}${row('Last food','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
     }
   }
   // heatmap: 12 weeks, columns=weeks
@@ -1292,7 +1313,9 @@ document.addEventListener('click', e => {
     case 'copyweek': copyWeek(a.dataset.w); break;
     case 'repskip': S.settings.reported[a.dataset.w] = 'skip'; save(); render(); break;
     case 'water': track('water', +a.dataset.n); break;
-    case 'meal': track('meal'); break;
+    case 'mealask': mealAsk(); break;
+    case 'meal': track('meal', +a.dataset.v || 1); break;
+    case 'mealsz': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ m.sz = +a.dataset.v; save(); render(); mealSheet(); } break; }
     case 'fsnack': track('fsnack'); break;
     case 'undo2': if(UNDO){ UNDO(); UNDO = null; save(); render(); toast('Undone'); } break;
     case 'watersheet': waterSheet(); break;
@@ -1300,7 +1323,7 @@ document.addEventListener('click', e => {
     case 'mealsheet': mealSheet(); break;
     case 'mealmv': { const m = S.meals.find(x=>String(x.ts)===a.dataset.ts); if(m){ const nt = Math.min(Date.now(), m.ts + a.dataset.d*6e4); m.ts = nt; save(); render(); mealSheet(); } break; }
     case 'mealdel': S.meals = S.meals.filter(x=>String(x.ts)!==a.dataset.ts); save(); render(); mealSheet(); break;
-    case 'mealpast': S.meals.push({...(a.dataset.k?{k:a.dataset.k}:{}), ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
+    case 'mealpast': S.meals.push({...(a.dataset.k?{k:a.dataset.k}:{sz:1}), ts:Math.max(Date.now()-3600e3, parseKey(lday(Date.now())).getTime()+DAY_START_H*3600e3)}); save(); render(); mealSheet(); break;
     case 'sleepsheet': sleepSheet(); break;
     case 'sleepdel': S.sleep = S.sleep.filter(x=>!(x.wake && dkey(new Date(x.wake))===a.dataset.k)); delete SLDRAFT[a.dataset.k]; save(); render(); sleepSheet(); break;
     case 'report': reportSheet(+a.dataset.n || 2); break;
