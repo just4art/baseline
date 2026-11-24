@@ -474,6 +474,14 @@ const waterOn = k => S.water.filter(w=>lday(w.ts)===k).reduce((a,w)=>a+w.ml,0);
 const foodOn = k => S.meals.filter(m=>lday(m.ts)===k).sort((a,b)=>a.ts-b.ts);
 const mealsOn = k => foodOn(k).filter(m=>m.k!=='snack');
 const fsnOn = k => foodOn(k).filter(m=>m.k==='snack');
+const SNK = {sweet:{n:'Sweet',ic:'🍫',d:'cake, cookie, chocolate, ice cream'}, salty:{n:'Salty',ic:'🥨',d:'chips, crackers'}, nuts:{n:'Nuts',ic:'🥜',d:'a handful'}, other:{n:'Other',ic:'🍪',d:'anything else'}};
+const snIc = m => (SNK[m.t]||SNK.other).ic;
+const BEV = {soda:{n:'Soda',b:'Soda',ic:'🥤',sw:1,d:'cola, lemonade'}, icetea:{n:'Ice tea',b:'Ice tea',ic:'🧊',sw:1,d:'sweetened'}, juice:{n:'Juice',b:'Juice',ic:'🧃',sw:1,d:'or smoothie'},
+  zero:{n:'Zero soda',b:'Zero',ic:'🫧',sw:0,d:'diet / zero / sparkling'}, coffee:{n:'Coffee',b:'Coffee',ic:'☕',sw:0,d:'no sugar'}, scoffee:{n:'Coffee + sugar',b:'☕ sugar',ic:'🧋',sw:1,d:'sugar or syrup'}};
+const bevOn = k => S.bev.filter(x=>lday(x.ts)===k && BEV[x.k]).sort((a,b)=>a.ts-b.ts);
+const sweetOn = k => bevOn(k).filter(x=>BEV[x.k].sw).length;
+const icCount = (list, map) => Object.entries(list.reduce((o,x)=>(o[x.k]=(o[x.k]||0)+1,o),{})).map(([k,n])=>`${map[k].ic}${n}`).join(' ');
+const agoTxt = ts => { const m = Math.max(0, Math.round((Date.now()-ts)/6e4)); return m < 60 ? `${m}m` : `${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`; };
 // meal size in portions: light ½, normal 1, big ×2, huge ×3
 const SIZES = [{v:0.5,n:'Light',d:'a few bites to half'},{v:1,n:'Normal',d:'one plate'},{v:2,n:'Big',d:'about two'},{v:3,n:'Huge',d:'three or more'}];
 const msz = m => m.sz || 1;
@@ -548,8 +556,8 @@ const num = v => { const n = parseFloat(String(v).replace(',','.')); return isFi
 
 /* ================= storage ================= */
 const KEY = 'baseline.v1';
-const APP_VERSION = 8;
-const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',waterGoal:2000,glass:250,reported:{},show:{},nicLast:'gum',snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[],water:[],meals:[],sleep:[],naps:[],drinks:[],nic:[],good:[]});
+const APP_VERSION = 9;
+const DEFAULT = () => ({settings:{level:1,voice:true,sound:true,goal:5,mode:'full',welcomed:false,place:'home',waterGoal:2000,glass:250,reported:{},show:{},nicLast:'gum',bevLast:'soda',snacks:{},nudgeOff:{},bumped:{}},sessions:[],habits:{},body:[],snackLog:[],checkins:[],water:[],meals:[],sleep:[],naps:[],drinks:[],nic:[],good:[],bev:[]});
 function load(){
   try{
     const raw = localStorage.getItem(KEY);
@@ -561,7 +569,7 @@ function load(){
         sessions:Array.isArray(d.sessions)?d.sessions:[], habits:obj(d.habits), body:Array.isArray(d.body)?d.body:[],
         snackLog:Array.isArray(d.snackLog)?d.snackLog:[], checkins:Array.isArray(d.checkins)?d.checkins:[],
         water:Array.isArray(d.water)?d.water:[], meals:Array.isArray(d.meals)?d.meals:[], sleep:Array.isArray(d.sleep)?d.sleep.filter(x=>x&&x.bed&&x.wake):[],
-        naps:arr(d.naps), drinks:arr(d.drinks), nic:arr(d.nic), good:arr(d.good)};
+        naps:arr(d.naps), drinks:arr(d.drinks), nic:arr(d.nic), good:arr(d.good), bev:arr(d.bev)};
     }
   }catch(e){}
   return DEFAULT();
@@ -569,7 +577,7 @@ function load(){
 let S = load();
 // every editable log entry gets a stable id, so editing a time never hits the wrong row
 const newUid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
-['meals','drinks','nic','good'].forEach(c => S[c].forEach((x,i) => { if(!x.uid) x.uid = `${x.ts.toString(36)}-${i}`; }));
+['meals','drinks','nic','good','bev'].forEach(c => S[c].forEach((x,i) => { if(!x.uid) x.uid = `${x.ts.toString(36)}-${i}`; }));
 if(!S.settings.mode) S.settings.mode = S.settings.short ? 'short' : 'full';
 const MODES = {full:'Full', short:'Short', mini:'8-min'};
 const UNLOCK = 6; // sessions at a level before a level-up is offered
@@ -920,9 +928,15 @@ function trackCard(){
       <span class="cnt">${ml?litres(ml).replace(' L','<span> L</span>'):'0'}</span>
       <button class="add" data-act="water" data-n="${gl}" aria-label="Add a glass, ${gl} ml">+${gl}</button><button class="add big" data-act="water" data-n="500" aria-label="Add 500 ml">+500</button>
     </div><div class="sbar"><i class="${w>=100?'full':''}" style="width:${w}%"></i></div></div>`;
+  const bs = bevOn(k), lb = S.settings.bevLast in BEV ? S.settings.bevLast : 'soda';
   h += `<div class="snack"><div class="r">
-      <button class="nm" data-act="mealsheet">Food<small class="times">${fd.length?fd.map(m=>(m.k==='snack'?'🍪':'')+hm(m.ts)+(m.k==='snack'||!szTag(m)?'':' '+szTag(m))).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
-      <button class="add wide" data-act="fsnack">+ Snack</button><button class="add big wide" data-act="mealask">+ Meal</button>
+      <button class="nm" data-act="bevsheet">Drinks<small class="times">${bs.length?`${icCount(bs,BEV)} · last ${hm(bs[bs.length-1].ts)} · edit ›`:'soda, ice tea, coffee ›'}</small></button>
+      <span class="cnt">${bs.length}</span>
+      <button class="add" data-act="bevsheet" aria-label="Pick a drink">⋯</button><button class="add big wide" data-act="bev" data-k="${lb}">+ ${BEV[lb].b}</button>
+    </div></div>`;
+  h += `<div class="snack"><div class="r">
+      <button class="nm" data-act="mealsheet">Food<small class="times">${fd.length?fd.map(m=>(m.k==='snack'?snIc(m):'')+hm(m.ts)+(m.k==='snack'||!szTag(m)?'':' '+szTag(m))).join(' · ')+' · edit ›':'tap when you eat'}</small></button>
+      <button class="add wide" data-act="snackask">+ Snack</button><button class="add big wide" data-act="mealask">+ Meal</button>
     </div></div>`;
   const nights = nk.map(x=>{ const sl = sleepOn(x); return `${DAYN[parseKey(x).getDay()]} ${sl?'<b>'+dur(slept(sl))+'</b>':'—'}${napOn(x)?'+'+fmtMin(napOn(x)):''}`; }).join(' · ');
   h += `<div class="snack"><div class="r">
@@ -938,7 +952,7 @@ function track(act, n){
   if(act==='water'){ snap('water'); S.water.push({ts:now, ml:n}); const v = waterOn(lday(now)), g = S.settings.waterGoal;
     save(); render(); undoToast(v>=g && v-n<g ? `Water goal hit · ${litres(v)} 💧` : `+${n} ml · ${litres(v)} today`); }
   if(act==='meal'){ snap('meals'); S.meals.push({ts:now, sz:n||1, uid:newUid()}); closeSheet(); save(); render(); undoToast(`${SIZES.find(x=>x.v===(n||1)).n} meal at ${hm(now)} · ${fmtP(portionsOn(lday(now)))} portion${portionsOn(lday(now))===1?'':'s'} today`); }
-  if(act==='fsnack'){ snap('meals'); S.meals.push({ts:now, k:'snack', uid:newUid()}); save(); render(); undoToast(`Snack at ${hm(now)}`); }
+  if(act==='fsnack'){ const t = SNK[n] ? n : 'other'; snap('meals'); S.meals.push({ts:now, k:'snack', t, uid:newUid()}); closeSheet(); save(); render(); undoToast(`${SNK[t].ic} ${SNK[t].n} snack at ${hm(now)}`); }
 }
 function undoToast(msg){
   const t = $('#toast'); t.classList.add('act');
@@ -953,10 +967,23 @@ let DIRTY = false; // main screen redraws when the sheet closes
 function mealSheet(){
   const k = lday(Date.now()), ms = foodOn(k);
   openSheet(`<div class="row between"><h2>Food today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">🍽️ meal · 🍪 snack. Tap a time to change it, or a size under a meal. Forgot one? Add it, then set the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
-    ${ms.length ? ms.map(m=>timeRow(m.k==='snack'?'🍪':'🍽️', m, 'meals')
-      + (m.k==='snack' ? '' : `<div class="row szrow">${SIZES.map(x=>`<button class="tog ${msz(m)===x.v?'on':''}" data-act="mealsz" data-uid="${m.uid}" data-v="${x.v}">${x.n}</button>`).join('')}</div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
+    <p class="small muted">🍽️ meal · 🍫🥨🥜🍪 snack. Tap a time to change it, or a size under a meal. Forgot one? Add it, then set the time. The day runs until ${DAY_START_H}:00, so late-night food stays with this evening.</p>
+    ${ms.length ? ms.map(m=>timeRow(m.k==='snack'?snIc(m):'🍽️', m, 'meals')
+      + (m.k==='snack' ? `<div class="row szrow">${Object.entries(SNK).map(([t,x])=>`<button class="tog ${(m.t||'other')===t?'on':''}" data-act="snkt" data-uid="${m.uid}" data-v="${t}">${x.ic} ${x.n}</button>`).join('')}</div>` : `<div class="row szrow">${SIZES.map(x=>`<button class="tog ${msz(m)===x.v?'on':''}" data-act="mealsz" data-uid="${m.uid}" data-v="${x.v}">${x.n}</button>`).join('')}</div>`)).join('') : '<p class="small">Nothing yet today.</p>'}
     <div class="row" style="margin-top:10px"><button class="btn sm" data-act="mealpast">+ Meal I forgot</button><button class="btn sm" data-act="mealpast" data-k="snack">+ Snack I forgot</button></div>`);
+}
+function snackAsk(){
+  openSheet(`<div class="row between"><h2>What kind?</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <div class="szgrid">${Object.entries(SNK).map(([t,x])=>`<button class="szb" data-act="fsnack" data-t="${t}"><b>${x.ic} ${x.n}</b><span>${x.d}</span></button>`).join('')}
+      <button class="szb" data-act="good" data-id="fruit" data-n="1" data-close="1"><b>🍌 Fruit</b><span>counts under Habits</span></button></div>`);
+}
+function bevSheet(){
+  RESHEET = bevSheet;
+  const bs = bevOn(lday(Date.now())), sw = bs.filter(x=>BEV[x.k].sw).length;
+  openSheet(`<div class="row between"><h2>Drinks today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
+    <p class="small muted">${bs.length?`${sw} sweet, ${bs.length-sw} not sweet. `:''}One tap per can, bottle or cup. Water goes in the Water row. Forgot one? Add it, then tap its time.</p>
+    <div class="szgrid">${Object.entries(BEV).map(([k,x])=>`<button class="szb" data-act="bev" data-k="${k}"><b>${x.ic} ${x.n}</b><span>${x.d} · ${bs.filter(y=>y.k===k).length} today</span></button>`).join('')}</div>
+    <div style="margin-top:12px">${logList('bev', bs, x=>BEV[x.k].ic+' '+BEV[x.k].n)}</div>`);
 }
 function mealAsk(){
   openSheet(`<div class="row between"><h2>How big?</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
@@ -982,7 +1009,7 @@ function habitsCard(){
   }
   if(shown('nicotine')){
     const ns = onDay('nic',k), y = onDay('nic', dkey(addDays(parseKey(k),-1))).length, lk = S.settings.nicLast in NIC ? S.settings.nicLast : 'gum';
-    rows.push(`<div class="r"><button class="nm" data-act="nicsheet">Nicotine<small class="times">${ns.length?kindCount(ns,NIC):'none yet'} · yesterday ${y}</small></button>
+    rows.push(`<div class="r"><button class="nm" data-act="nicsheet">Nicotine<small class="times">${S.nic.length?`last <span data-ago="${Math.max(...S.nic.map(x=>x.ts))}">${agoTxt(Math.max(...S.nic.map(x=>x.ts)))}</span> ago`:'none yet'} · yesterday ${y}</small></button>
       <span class="cnt">${ns.length}</span>
       <button class="add" data-act="nicsheet" aria-label="Pick another kind">⋯</button><button class="add big wide" data-act="nic" data-k="${lk}">+ ${NIC[lk]}</button></div>`);
   }
@@ -1008,7 +1035,7 @@ function nicSheet(){
   RESHEET = nicSheet;
   const ns = onDay('nic', lday(Date.now()));
   openSheet(`<div class="row between"><h2>Nicotine today</h2><button class="ib" data-act="close" aria-label="Close">✕</button></div>
-    <p class="small muted">Tap what you had. Earlier ones: add them, then tap each time to set it. The main button remembers your last choice.</p>
+    <p class="small muted">${ns.length?kindCount(ns,NIC)+' today. ':''}Tap what you had. Earlier ones: add them, then tap each time to set it. The main button remembers your last choice.</p>
     <div class="szgrid">${Object.entries(NIC).map(([k,n])=>`<button class="szb" data-act="nic" data-k="${k}"><b>${n}</b><span>${onDay('nic',lday(Date.now())).filter(x=>x.k===k).length} today</span></button>`).join('')}</div>
     <div style="margin-top:12px">${logList('nic', ns, x=>NIC[x.k])}</div>`);
 }
@@ -1084,7 +1111,8 @@ function reportText(weeks){
       d.o.forEach(o => parts.push(`${o.act} ${o.secs/60|0}min`));
       const ml = waterOn(k); if(ml) parts.push(`water ${litres(ml)}`);
       const ms = mealsOn(k); if(ms.length) parts.push(`meals ${ms.map(m=>hm(m.ts)+(szTag(m)?`(${szTag(m)})`:'')).join(' ')} = ${fmtP(portionsOn(k))} portions`);
-      const fs = fsnOn(k); if(fs.length) parts.push(`food snacks ${fs.map(m=>hm(m.ts)).join(' ')}`);
+      const fs = fsnOn(k); if(fs.length) parts.push(`food snacks ${fs.map(m=>`${hm(m.ts)} ${m.t||'unspecified'}`).join(', ')}`);
+      const bv = bevOn(k); if(bv.length) parts.push(`drinks ${bv.map(x=>`${BEV[x.k].n.toLowerCase()} ${hm(x.ts)}`).join(', ')} (${sweetOn(k)} sweet)`);
       const sl = sleepOn(k); if(sl) parts.push(`sleep ${hm(sl.bed)}→${hm(sl.wake)} (${dur(slept(sl))} asleep${sl.awake?`, awake ${fmtMin(sl.awake)} in the night`:''})`);
       if(napOn(k)) parts.push(`nap ${fmtMin(napOn(k))}`);
       GOOD.forEach(g => { const xs = onDay('good',k).filter(x=>x.id===g.id); if(xs.length) parts.push(g.u==='x' ? `${g.n.toLowerCase()} ${xs.length}: ${xs.map(x=>hm(x.ts)).join(' ')}` : xs.map(x=>`${g.n.toLowerCase()} ${x.min}min ${hm(x.ts)}`).join(', ')); });
@@ -1106,7 +1134,7 @@ function reportText(weeks){
   }
   const ws = S.body.filter(b=>b.waist!=null).sort((a,b)=>a.date<b.date?-1:1);
   if(ws.length>1) L.push('', `Waist trend: ${ws[0].waist} cm (${fmtDate(ws[0].date)}) → ${ws[ws.length-1].waist} cm (${fmtDate(ws[ws.length-1].date)})`);
-  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so food after midnight belongs to the evening before. "Food snacks" are eating, not exercise. A standard drink is 10 g of alcohol. Sleep is listed on the day you woke up; "asleep" excludes time awake in the night. Fruit is counted separately from food.`,
+  L.push('', `Times are local; a tracker day runs ${DAY_START_H}:00 to ${DAY_START_H}:00, so food after midnight belongs to the evening before. "Food snacks" are eating, not exercise. A standard drink is 10 g of alcohol. Sleep is listed on the day you woke up; "asleep" excludes time awake in the night. Fruit is counted separately from food. Sweet drinks = soda, sweetened ice tea, juice, coffee with sugar.`,
     'Please review this. First ask me 3-5 quick questions I can answer in a word or two (energy, hunger, what got in the way, anything to change in the app). Then tell me what is working and the one change for next week.');
   return L.join('\n');
 }
@@ -1117,7 +1145,8 @@ function trackSummary(days){
   const md = days.map(mealsOn).filter(a=>a.length), fdk = days.filter(k=>foodOn(k).length);
   if(fdk.length){
     const lateF = fdk.filter(k=>{ const a = foodOn(k); return minsFrom(a[a.length-1].ts, DAY_START_H) >= (23-DAY_START_H)*60; }).length;
-    out.push(`food logged on ${fdk.length} day${fdk.length>1?'s':''}, food snacks avg ${avg(fdk.map(k=>fsnOn(k).length)).toFixed(1)}/day, anything eaten after 23:00 on ${lateF}d`);
+    const sk = fdk.flatMap(fsnOn).reduce((o,m)=>(o[m.t||'unspecified']=(o[m.t||'unspecified']||0)+1,o),{});
+    out.push(`food logged on ${fdk.length} day${fdk.length>1?'s':''}, food snacks avg ${avg(fdk.map(k=>fsnOn(k).length)).toFixed(1)}/day${Object.keys(sk).length?` (${Object.entries(sk).map(([t,n])=>`${t} ${n}`).join(', ')})`:''}, anything eaten after 23:00 on ${lateF}d`);
   }
   if(md.length){
     const late = md.filter(a=>minsFrom(a[a.length-1].ts, DAY_START_H) >= (23-DAY_START_H)*60).length;
@@ -1125,6 +1154,8 @@ function trackSummary(days){
     out.push(`portions avg ${fmtP(Math.round(avg(pk.map(portionsOn))*2)/2)}/day (light ½, big ×2, huge ×3), big or huge meals ${bigs.length} (${bigs.filter(m=>minsFrom(m.ts,DAY_START_H)>=(21-DAY_START_H)*60).length} after 21:00)`);
     out.push(`meals avg ${avg(md.map(a=>a.length)).toFixed(1)}/day on ${md.length} logged day${md.length>1?'s':''}, first ~${fromMins(avg(md.map(a=>minsFrom(a[0].ts,DAY_START_H))),DAY_START_H)}, last ~${fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H)}, last meal after 23:00 on ${late}d`);
   }
+  const bd = days.filter(k=>bevOn(k).length);
+  if(bd.length){ const all = bd.flatMap(bevOn); out.push(`drinks logged on ${bd.length} day${bd.length>1?'s':''}: sweet drinks avg ${avg(bd.map(sweetOn)).toFixed(1)}/day (max ${Math.max(...bd.map(sweetOn))}), ${Object.entries(all.reduce((o,x)=>(o[x.k]=(o[x.k]||0)+1,o),{})).map(([k,n])=>`${BEV[k].n.toLowerCase()} ${n}`).join(', ')}`); }
   const sl = days.map(sleepOn).filter(x=>x && x.bed);
   if(sl.length) out.push(`sleep avg ${dur(avg(sl.map(slept)))} over ${sl.length} night${sl.length>1?'s':''}, asleep ~${fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18)}, up ~${fromMins(avg(sl.map(x=>minsFrom(x.wake,0))),0)}`);
   const nps = days.map(napOn).filter(Boolean);
@@ -1135,7 +1166,8 @@ function trackSummary(days){
   const dd = days.filter(k=>onDay('drinks',k).length);
   if(dd.length){ const all = dd.flatMap(k=>onDay('drinks',k)); out.push(`alcohol on ${dd.length} day${dd.length>1?'s':''}, ≈${all.reduce((a,d)=>a+stdDr(d),0).toFixed(1)} standard drinks total (max ≈${Math.max(...dd.map(k=>onDay('drinks',k).reduce((a,d)=>a+stdDr(d),0))).toFixed(1)} in a day)`); }
   const nd = days.filter(k=>onDay('nic',k).length);
-  if(nd.length){ const all = nd.flatMap(k=>onDay('nic',k)); out.push(`nicotine avg ${(all.length/nd.length).toFixed(1)}/day on ${nd.length} logged day${nd.length>1?'s':''} (${kindCount(all,NIC)}), first ~${fromMins(avg(nd.map(k=>minsFrom(onDay('nic',k)[0].ts,DAY_START_H))),DAY_START_H)}`); }
+  if(nd.length){ const all = nd.flatMap(k=>onDay('nic',k)), gaps = nd.flatMap(k=>{ const a = onDay('nic',k); return a.slice(1).map((x,i)=>(x.ts-a[i].ts)/6e4); }).sort((a,b)=>a-b);
+    out.push(`nicotine avg ${(all.length/nd.length).toFixed(1)}/day on ${nd.length} logged day${nd.length>1?'s':''} (${kindCount(all,NIC)}), first ~${fromMins(avg(nd.map(k=>minsFrom(onDay('nic',k)[0].ts,DAY_START_H))),DAY_START_H)}${gaps.length?`, median gap ${fmtMin(Math.round(gaps[gaps.length>>1]))}, gaps under 30 min: ${gaps.filter(g=>g<30).length}`:''}`); }
   return out.length ? 'Tracking: ' + out.join('; ') : '';
 }
 function reportSheet(weeks=2){
@@ -1196,13 +1228,14 @@ function renderProgress(){
         lm: md.length?fromMins(avg(md.map(a=>minsFrom(a[a.length-1].ts,DAY_START_H))),DAY_START_H):'—',
         p: md.length?fmtP(Math.round(avg(ks.filter(k=>mealsOn(k).length).map(portionsOn))*2)/2):'—',
         fs: md.length?avg(ks.filter(k=>foodOn(k).length).map(k=>fsnOn(k).length)).toFixed(1):'—',
+        sd: ks.some(k=>bevOn(k).length)?avg(ks.filter(k=>bevOn(k).length).map(sweetOn)).toFixed(1):'—',
         s: sl.length?dur(avg(sl.map(slept))):'—', b: sl.length?fromMins(avg(sl.map(x=>minsFrom(x.bed,18))),18):'—'};
     };
-    if(S.water.length || S.meals.length || S.sleep.length){
+    if(S.water.length || S.meals.length || S.sleep.length || S.bev.length){
       const A = stat(wk(mon)), B = stat(wk(addDays(mon,-7)));
       const row = (l,f) => `<tr><td>${l}</td><td class="num"><b>${A[f]}</b></td><td class="num muted">${B[f]}</td></tr>`;
       h += `<div class="card"><h3>Water, food, sleep</h3><table class="mini"><thead><tr><th>Average</th><th class="num">This week</th><th class="num">Last week</th></tr></thead><tbody>
-        ${row('Water / day','w')}${row('Meals / day','m')}${row('Portions / day','p')}${row('Snacks / day','fs')}${row('Last food','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
+        ${row('Water / day','w')}${row('Sweet drinks / day','sd')}${row('Meals / day','m')}${row('Portions / day','p')}${row('Snacks / day','fs')}${row('Last food','lm')}${row('Sleep','s')}${row('Asleep at','b')}</tbody></table></div>`;
     }
   }
   if(S.good.length || S.drinks.length || S.nic.length){
@@ -1291,7 +1324,7 @@ function renderSettings(){
   [3,4,5,6].forEach(g => h += `<button class="lvl ${g===st.goal?'on':''}" data-act="goal" data-g="${g}"><b>${g}</b><span>days</span></button>`);
   h += `</div><p class="small muted" style="margin-top:10px">Days with snacks, a workout or a logged activity all count. Five is a good target.</p></div>`;
   h += `<div class="card"><h3>Your data</h3>
-    <p class="small muted" style="margin-top:0">Everything lives on this device only (${S.sessions.length} sessions, ${S.snackLog.length} snack sets, ${S.water.length+S.meals.length+S.sleep.length+S.naps.length+S.drinks.length+S.nic.length+S.good.length} other logs, ${S.body.length} body check-ins). No account, nothing is uploaded. Export a backup once a month — and before switching phones.</p>
+    <p class="small muted" style="margin-top:0">Everything lives on this device only (${S.sessions.length} sessions, ${S.snackLog.length} snack sets, ${S.water.length+S.meals.length+S.sleep.length+S.naps.length+S.drinks.length+S.nic.length+S.good.length+S.bev.length} other logs, ${S.body.length} body check-ins). No account, nothing is uploaded. Export a backup once a month — and before switching phones.</p>
     <p class="small muted">Updates install by themselves and never touch your data. Don’t remove the home-screen icon: that deletes its data. Opening the link in Safari shows a separate, empty copy.</p>
     <div class="row"><button class="btn sm" data-act="export">Export backup</button><label class="btn sm" style="cursor:pointer">Import backup<input type="file" accept="application/json,.json" data-act="import" hidden></label><button class="btn sm danger" data-act="reset">Erase everything</button></div></div>`;
   h += `<div class="card"><h3>Theme</h3><div class="row">${['auto','light','dark'].map(m=>`<button class="btn sm ${(st.theme||'auto')===m?'pri':''}" data-act="theme" data-m="${m}">${m[0].toUpperCase()+m.slice(1)}</button>`).join('')}</div></div>`;
@@ -1365,6 +1398,7 @@ function openSheet(html){
   $('#toast')?.classList.remove('on','act');
   s.querySelector('button, input, select')?.focus();
 }
+setInterval(()=>document.querySelectorAll('[data-ago]').forEach(e=>{ e.textContent = agoTxt(+e.dataset.ago); }), 30000);
 function closeSheet(){ $('#scrim')?.remove(); if(DIRTY){ DIRTY = false; render(); } }
 
 function previewSheet(tid){
@@ -1430,7 +1464,7 @@ document.addEventListener('click', e => {
     case 'repskip': S.settings.reported[a.dataset.w] = 'skip'; save(); render(); break;
     case 'water': track('water', +a.dataset.n); break;
     case 'mealask': mealAsk(); break;
-    case 'good': { const n = +a.dataset.n, g = GOOD.find(x=>x.id===a.dataset.id); if(!g) break;
+    case 'good': { const n = +a.dataset.n, g = GOOD.find(x=>x.id===a.dataset.id); if(!g) break; if(a.dataset.close) closeSheet();
       if(g.u==='x') addLog('good', {ts:Date.now(), id:g.id}, `${g.ic} ${g.n} at ${hm(Date.now())} · ${onDay('good',lday(Date.now())).filter(x=>x.id===g.id).length+1} today`);
       else addLog('good', {ts:Date.now(), id:g.id, min:n}, `${g.n} ${n} min · nice`); break; }
     case 'goodsheet': goodSheet(a.dataset.id); break;
@@ -1438,7 +1472,7 @@ document.addEventListener('click', e => {
     case 'drinksheet': drinkSheet(); break;
     case 'nic': { const k = a.dataset.k; S.settings.nicLast = k; addLog('nic', {ts:Date.now(), k}, `${NIC[k]} at ${hm(Date.now())} · ${onDay('nic',lday(Date.now())).length+1} today`); break; }
     case 'nicsheet': nicSheet(); break;
-    case 'del': { const col = a.dataset.col; if(!['meals','drinks','nic','good'].includes(col)) break; S[col] = S[col].filter(e=>e.uid!==a.dataset.uid); save(); render(); (col==='meals' ? mealSheet : RESHEET)?.(); break; }
+    case 'del': { const col = a.dataset.col; if(!['meals','drinks','nic','good','bev'].includes(col)) break; S[col] = S[col].filter(e=>e.uid!==a.dataset.uid); save(); render(); (col==='meals' ? mealSheet : RESHEET)?.(); break; }
     case 'awake': { const k = a.dataset.k, v = +a.dataset.v, sl = sleepOn(k);
       if(sl){ if(v) sl.awake = v; else delete sl.awake; save(); render(); } else (SLDRAFT[k] = SLDRAFT[k] || {}).awake = v;
       sleepSheet(); break; }
@@ -1446,7 +1480,12 @@ document.addEventListener('click', e => {
     case 'showtog': S.settings.show[a.dataset.id] = !shown(a.dataset.id); save(); render(); break;
     case 'meal': track('meal', +a.dataset.v || 1); break;
     case 'mealsz': { const m = S.meals.find(x=>x.uid===a.dataset.uid); if(m){ m.sz = +a.dataset.v; save(); render(); mealSheet(); } break; }
-    case 'fsnack': track('fsnack'); break;
+    case 'fsnack': track('fsnack', a.dataset.t); break;
+    case 'snackask': snackAsk(); break;
+    case 'snkt': { const m = S.meals.find(x=>x.uid===a.dataset.uid); if(m){ m.t = a.dataset.v; save(); render(); mealSheet(); } break; }
+    case 'bev': { const k = a.dataset.k; if(!BEV[k]) break; S.settings.bevLast = k; const sw = sweetOn(lday(Date.now())) + BEV[k].sw;
+      addLog('bev', {ts:Date.now(), k}, `${BEV[k].ic} ${BEV[k].n} at ${hm(Date.now())}${BEV[k].sw?` · ${sw} sweet today`:''}`); break; }
+    case 'bevsheet': bevSheet(); break;
     case 'undo2': if(UNDO){ UNDO(); UNDO = null; save(); render(); toast('Undone'); } break;
     case 'watersheet': waterSheet(); break;
     case 'waterset': S.settings[a.dataset.k] = +a.dataset.v; save(); render(); waterSheet(); break;
@@ -1487,7 +1526,7 @@ document.addEventListener('change', e => {
   if(a.dataset.act==='set'){ S.settings[a.dataset.k] = a.checked; save(); }
   if(a.dataset.act==='import' && a.files[0]) importData(a.files[0]);
   if(a.dataset.act==='logtime'){
-    const col = a.dataset.col, x = ['meals','drinks','nic','good'].includes(col) && S[col].find(e=>e.uid===a.dataset.uid), m = hhmm(a.value);
+    const col = a.dataset.col, x = ['meals','drinks','nic','good','bev'].includes(col) && S[col].find(e=>e.uid===a.dataset.uid), m = hhmm(a.value);
     if(x && m!=null){
       // keep it on the same tracker day: times before 4:00 are after midnight
       const t = parseKey(lday(x.ts)).getTime() + (m < DAY_START_H*60 ? 864e5 : 0) + m*6e4;
